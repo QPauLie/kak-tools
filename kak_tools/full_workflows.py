@@ -38,7 +38,7 @@ def minimal_workflow_tfXY(n, t0, coefficients="random"):
 
 
 def complete_workflow_tfXY(n, t0, coefficients="random"):
-    H, generators, coeffs = make_tfXY_hamiltonian_qubits(n, coefficients="random")
+    H, generators, coeffs = make_tfXY_hamiltonian_qubits(n, coefficients=coefficients)
 
     # start = time.process_time()
     algebra = lie_closure_pauli_words(generators, verbose=False)
@@ -72,7 +72,7 @@ def complete_workflow_tfXY(n, t0, coefficients="random"):
 
 
 def workflow_tfXY_known_algebra(n, t0, coefficients="random"):
-    H, generators, coeffs = make_tfXY_hamiltonian_qubits(n, coefficients="random")
+    H, generators, coeffs = make_tfXY_hamiltonian_qubits(n, coefficients=coefficients)
 
     # start = time.process_time()
     algebra = make_so_2n(n)
@@ -106,7 +106,7 @@ def workflow_tfXY_known_algebra(n, t0, coefficients="random"):
 
 
 def diagonalization_tfXY(n, t0, coefficients="random"):
-    H = make_tfXY_hamiltonian_irrep(n, coefficients="random")
+    H = make_tfXY_hamiltonian_irrep(n, coefficients=coefficients)
 
     U = expm(t0 * H)
     theta = bdi(U, n, n, is_horizontal=True, validate=False, compute_u=False, compute_vh=False)

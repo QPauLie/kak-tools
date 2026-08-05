@@ -396,9 +396,30 @@ def irrep_dot(coeffs, generators, mapping, signs, n, invol_type):
 """
 
 
-def irrep_dot(coeffs, generators, mapping, n, invol_type):
+def irrep_dot(coeffs, generators, mapping, signs=None, n=None, invol_type=None):
+    """Build ``sum_i coeffs[i] * generators[i]`` directly in the irrep.
+
+    Two mapping conventions are accepted:
+
+    - ``mapping = {node: (PauliWord, sign)}`` with ``signs=None``, as produced by
+      ``make_so_2n_full_mapping_str``-style helpers, and
+    - ``mapping = {node: PauliWord}`` together with ``signs = {node: sign}``, which is
+      what :func:`map_simple_to_irrep` returns.
+
+    The legacy positional call ``irrep_dot(coeffs, generators, mapping, n, invol_type)``
+    still works.
+    """
+    if isinstance(signs, (int, np.integer)):
+        # Legacy positional signature: signs slot held n, n slot held invol_type.
+        signs, n, invol_type = None, int(signs), invol_type if invol_type is not None else n
+
+    generators = list(generators)
+    if signs is None:
+        inv_mapping = {op: (node, sign) for node, (op, sign) in mapping.items() if op in generators}
+    else:
+        inv_mapping = {op: (node, signs[node]) for node, op in mapping.items() if op in generators}
+
     out = 0.0
-    inv_mapping = {op: (node, sign) for node, (op, sign) in mapping.items() if op in generators}
     for c, gen in zip(coeffs, generators):
         node, sign = inv_mapping[gen]
         out += c * sign * E(node, n, invol_type)
