@@ -105,6 +105,33 @@ def workflow_tfXY_known_algebra(n, t0, coefficients="random"):
     return pauli_decomp
 
 
+def paulie_workflow(generators, coefficients=None, t0=1.0, validate=True):
+    """Model-agnostic counterpart of ``complete_workflow_tfXY``.
+
+    ``complete_workflow_tfXY`` hard-codes the algebra of the transverse-field XY model
+    (``n_so = 2 * n``, ``invol_type="BDI"``). This version asks PauLie to classify the
+    dynamical Lie algebra of whatever generators it is given and configures the
+    decomposition from that answer, so it works for any generator set whose DLA PauLie
+    identifies as an ``so(n)``.
+
+    Args:
+        generators: Hamiltonian terms, as Pauli words, Pauli strings such as ``"XXII"``,
+            or a PauLie ``PauliStringCollection``.
+        coefficients (Sequence[float], optional): Hamiltonian coefficients. Defaults to
+            all ones.
+        t0 (float): Evolution time.
+        validate (bool): Whether to check that the Pauli rotations recompose the unitary.
+
+    Returns:
+        list: ``(PauliWord, angle, kind)`` triples, matching the output format of
+        ``complete_workflow_tfXY``.
+    """
+    from .paulie_bridge import kak_decomposition
+
+    result = kak_decomposition(generators, coefficients, time=t0, validate=validate)
+    return result.pauli_rotations
+
+
 def diagonalization_tfXY(n, t0, coefficients="random"):
     H = make_tfXY_hamiltonian_irrep(n, coefficients=coefficients)
 

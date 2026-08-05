@@ -7,5 +7,7 @@ setup(
    author='People',
    author_email='emails',
    packages=['kak_tools'],  #same as name
-   install_requires=['pennylane'], #external packages as dependencies
+   # paulie classifies the DLA that kak_tools.paulie_bridge decomposes; it needs
+   # Python >= 3.12.
+   install_requires=['pennylane', 'paulie>=0.0.2'],
 )

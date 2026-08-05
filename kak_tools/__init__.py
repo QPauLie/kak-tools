@@ -43,3 +43,21 @@ from .numerical_decompositions import (
     cii_kak,  # to do
     sympl_eig,
 )
+
+# Bridge to PauLie (https://github.com/QPauLie/PauLie), which classifies the dynamical
+# Lie algebra of a Pauli generator set exactly.
+from .paulie_bridge import (
+    DLAComponent,
+    DLAInfo,
+    KAKResult,
+    as_pauli_collection,
+    as_pauli_words,
+    classify_dla,
+    dla_pauli_basis,
+    kak_decomposition,
+    labelled_matrix_basis,
+    map_dla_to_irrep,
+    pauli_string_to_word,
+    pauli_word_to_string,
+    reconstruct_from_pauli_rotations,
+)
