@@ -197,20 +197,29 @@ def recursive_bdi(U, n, num_iter=None, first_is_horizontal=True, validate=True, 
 
 
 def angles_to_reducible(theta, s, e, mapping, signs):
+    """Map the cosine-sine angles of a block spanning ``[s, e)`` to Pauli rotations.
+
+    The block is split by ``bdi``/``recursive_bdi`` into ``p = (e - s) // 2`` and
+    ``q = (e - s) - p``, and the resulting Cartan element rotates index ``i`` against
+    index ``i + q`` (not ``i + p``). The two agree whenever the block width is even;
+    for odd widths ``q = p + 1`` and using ``p`` silently assigns the angles to the
+    wrong Pauli words.
+    """
     p = (e - s) // 2
     q = (e - s) - p
     op = {
-        mapping[(s + i, s + p + i)]: th / 2 / signs[(s + i, s + p + i)]
+        mapping[(s + i, s + q + i)]: th / 2 / signs[(s + i, s + q + i)]
         for i, th in enumerate(theta)
     }
     return PauliSentence(op)
 
 
 def angles_to_reducible_str(theta, s, e, mapping):
+    """String-mapping variant of ``angles_to_reducible``; see there for the ``q`` offset."""
     p = (e - s) // 2
     q = (e - s) - p
     op = {
-        (pw_sign := mapping[(s + i, s + p + i)])[0]: th / 2 / pw_sign[1]
+        (pw_sign := mapping[(s + i, s + q + i)])[0]: th / 2 / pw_sign[1]
         for i, th in enumerate(theta)
     }
     return op

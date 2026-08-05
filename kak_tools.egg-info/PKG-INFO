@@ -1,0 +1,11 @@
+Metadata-Version: 2.4
+Name: kak_tools
+Version: 0.1
+Summary: KAK decomposition tools
+Author: People
+Author-email: emails
+Requires-Dist: pennylane
+Dynamic: author
+Dynamic: author-email
+Dynamic: requires-dist
+Dynamic: summary
