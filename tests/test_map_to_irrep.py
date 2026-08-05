@@ -3,8 +3,24 @@ import numpy as np
 from itertools import combinations
 import pennylane as qml
 from pennylane.pauli import PauliWord
-from pennylane.labs.dla import structure_constants_dense
 from kak_tools import lie_closure_pauli_words, map_simple_to_irrep, map_irrep_to_matrices
+
+
+def structure_constants_dense(matrices, is_orthonormal=False):
+    """Structure constants of a matrix-valued algebra.
+
+    ``pennylane.labs.dla.structure_constants_dense`` was folded into
+    ``qml.structure_constants(..., matrix=True)`` upstream; this shim keeps the test
+    working across PennyLane versions.
+    """
+    try:
+        from pennylane.labs.dla import structure_constants_dense as _impl
+
+        return _impl(matrices, is_orthonormal=is_orthonormal)
+    except ImportError:
+        return qml.structure_constants(
+            list(matrices), matrix=True, is_orthogonal=is_orthonormal
+        )
 
 
 gens_for_closure = [
