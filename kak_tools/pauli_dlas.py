@@ -1,6 +1,7 @@
 """This file contains tools for handling DLAs made of Pauli words."""
 
 import copy
+import warnings
 from collections.abc import Iterable
 from itertools import combinations, product
 import networkx as nx
@@ -202,6 +203,9 @@ def lie_closure_pauli_words(generators, verbose=False, max_iterations=10000, ful
 
     dla = copy.copy(generators)
     assert all(isinstance(op, qml.pauli.PauliWord) for op in generators)
+    # Membership is tested once per commutator, so keep a set alongside the list: `in` on
+    # a list of d Pauli words is O(d), which makes the closure O(d^3) rather than O(d^2).
+    seen = set(dla)
     epoch = 0
     old_length = 0  # dummy value
     new_length = initial_length = len(dla)
@@ -210,12 +214,18 @@ def lie_closure_pauli_words(generators, verbose=False, max_iterations=10000, ful
         if verbose:
             print(f"epoch {epoch+1} of lie_closure, DLA size is {new_length}")
 
-        for pw1, pw2 in product(dla[:initial_length], dla[old_length:]):
+        for pw1, pw2 in product(dla[:initial_length], dla[old_length:new_length]):
             if pw1.commutes_with(pw2):
                 continue
             com = pw1._matmul(pw2)[0]
-            if com not in dla:
+            if com not in seen:
+                seen.add(com)
                 dla.append(com)
+                if len(dla) == full_size:
+                    # The caller told us how big the algebra is, so we are done.
+                    if verbose > 0:
+                        print(f"Reached the announced DLA size of {full_size}")
+                    return dla
 
         # Updated number of linearly independent PauliSentences from previous and current step
         old_length = new_length
