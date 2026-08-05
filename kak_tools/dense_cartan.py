@@ -238,25 +238,44 @@ def angles_to_reducible_str(theta, s, e, mapping):
     return op
 
 
-def group_matrix_to_reducible(matrix, start, mapping, signs):
+def group_matrix_to_reducible(matrix, start, mapping, signs, tol=1e-10):
     """Map a (SO(n)) group element composed of commuting Given's rotations
-    into commuting Pauli rotations on the reducible representation given by mapping & signs."""
+    into commuting Pauli rotations on the reducible representation given by mapping & signs.
+
+    The rotation planes are read off from the non-zero off-diagonal entries, and the angle
+    of the plane spanned by ``(i, j)`` is ``arctan2(matrix[i, j], matrix[i, i])``. Indices
+    that are left over span a diagonal block of :math:`\\pm 1`; a pair of ``-1`` entries
+    there is a rotation by :math:`\\pi`, which has no off-diagonal entry to be discovered
+    by but is emitted all the same. (Reading the angle off ``arcsin`` of the off-diagonal
+    entry alone silently drops those factors, which happens whenever an angle lands
+    exactly on :math:`\\pi` -- for instance for a translation-invariant Hamiltonian with
+    uniform coefficients.)
+    """
     op = {}
     seen_ids = set()
-    for i, j in zip(*np.where(matrix)):
-        if i < j:
-            assert i not in seen_ids and j not in seen_ids, f"{matrix}"
-            m_ii = matrix[i, i]
-            m_jj = matrix[j, j]
-            assert np.isclose((sign := np.sign(m_ii)), np.sign(m_jj)) or np.allclose(
-                [m_ii, m_jj], 0.0
-            ), f"{m_ii}, {m_jj}"
-            angle = np.arcsin(matrix[i, j])
-            assert angle.dtype == np.float64
-            if sign < 0:
-                angle = np.pi - angle
-            op[mapping[(start + i, start + j)]] = angle / 2 / signs[(start + i, start + j)]
-            seen_ids |= {i, j}
+    for i, j in zip(*np.where(np.abs(matrix) > tol)):
+        if i >= j:
+            continue
+        assert i not in seen_ids and j not in seen_ids, f"{matrix}"
+        m_ii = matrix[i, i]
+        m_jj = matrix[j, j]
+        assert np.isclose(np.sign(m_ii), np.sign(m_jj)) or np.allclose(
+            [m_ii, m_jj], 0.0
+        ), f"{m_ii}, {m_jj}"
+        angle = float(np.arctan2(matrix[i, j], m_ii))
+        op[mapping[(start + i, start + j)]] = angle / 2 / signs[(start + i, start + j)]
+        seen_ids |= {i, j}
+
+    # Whatever is left is a diagonal block of +-1. Every pair of -1s is a rotation by pi.
+    flipped = [
+        i for i in range(len(matrix)) if i not in seen_ids and matrix[i, i] < 0
+    ]
+    assert len(flipped) % 2 == 0, (
+        f"An odd number of -1 entries ({len(flipped)}) is left over, so this matrix has "
+        f"determinant -1 and is not a product of rotations:\n{matrix}"
+    )
+    for i, j in zip(flipped[::2], flipped[1::2]):
+        op[mapping[(start + i, start + j)]] = np.pi / 2 / signs[(start + i, start + j)]
 
     return PauliSentence(op)
 
