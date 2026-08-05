@@ -64,14 +64,27 @@ def bdi(u, p, q, is_horizontal=True, validate=True, **kwargs):
         assert np.allclose(k1 @ a @ k2, u), f"\n{k1}\n{a}\n{k2}\n{k1 @ a @ k2}\n{u}"
 
     if is_horizontal:
+        # We want k1 = k2.T, but scipy is unburdened by such concerns: for a horizontal
+        # u the CS decomposition is only determined up to a diagonal sign gauge
+        # D = diag(+-1), under which (k1, a, k2) -> (k1, a diag(D, D), diag(D, D) k2).
+        # That leaves k1 @ a @ k2 invariant and shifts theta_i by pi wherever d_i = -1,
+        # so we can always repair the mismatch instead of giving up on it.
+        flips = []
         for i in range(p):
-            # we want k1 = k2.T, but scipy is unburdened by such concerns
-            if not (np.allclose(k11[:, i], k21[i])):
-                raise ValueError
-                d = np.diag([(-1) ** ((j % p) == i) for j in range(p + q)])
-                a = a @ d
-                k2 = d @ k2
-                # k1 @ a @ k2 was unchanged by the above business
+            if np.allclose(k11[:, i], k21[i]):
+                continue
+            if p == q and np.allclose(k11[:, i], -k21[i]):
+                flips.append(i)
+            else:
+                raise ValueError(
+                    f"Column {i} of k11 matches neither +k21[{i}] nor -k21[{i}], so u does "
+                    "not appear to be the exponential of a horizontal element. Pass "
+                    "is_horizontal=False if that is expected."
+                )
+        for i in flips:
+            k21[i] *= -1
+            k22[i] *= -1
+            theta[i] += np.pi
 
     # banish negative determinants
     d11 = det(k11)
