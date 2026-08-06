@@ -61,7 +61,7 @@ from scipy.linalg import expm
 
 from .dense_cartan import map_recursive_decomp_to_reducible, recursive_bdi
 from .map_to_irrep import map_simple_to_irrep
-from .pauli_dlas import get_simple_dim, lie_closure_pauli_words
+from .pauli_dlas import lie_closure_pauli_words
 
 __all__ = [
     "DLAComponent",
@@ -355,23 +355,16 @@ class DLAInfo:
     @property
     def is_simple(self) -> bool:
         """bool: Whether the algebra is a single simple factor."""
-        components = self.components
-        return len(components) == 1 and components[0].multiplicity == 1
+        return bool(self.classification.is_simple())
 
     @property
     def simple_component(self) -> DLAComponent:
         """DLAComponent: The unique simple summand.
 
         Raises:
-            ValueError: If the algebra is not simple.
+            ClassificationException: If the algebra is not simple.
         """
-        if not self.is_simple:
-            raise ValueError(
-                f"The DLA {self.algebra} is not simple; it has components "
-                f"{[str(c) for c in self.components]}. Decompose the components "
-                "separately, or use `split_pauli_algebra` to obtain them."
-            )
-        return self.components[0]
+        return DLAComponent.parse(self.classification.get_simple_component())
 
     @property
     def orthogonal_size(self) -> int | None:
@@ -384,21 +377,10 @@ class DLAInfo:
         ``so(4)``, and which ``kak_tools`` is perfectly happy to decompose with a BDI
         involution.
 
-        The candidate ``m`` is fixed by the dimension, and the verdict is PauLie's own
-        :meth:`~paulie.classifier.classification.Classification.is_algebra`, which
-        canonicalises both sides through its table of low-rank isomorphisms.
-
         Returns:
             int or None: ``m`` if an ``so(m)`` presentation exists, else ``None``.
         """
-        # so(m) has dimension m (m - 1) / 2, so m is fixed by the dimension.
-        is_so_dimension, m = get_simple_dim("so", self.dim)
-        if not is_so_dimension:
-            return None
-        if m == 2:
-            # PauLie's isomorphism table does not list so(2) = u(1), so check by name.
-            return 2 if self.algebra == "u(1)" else None
-        return m if self.is_algebra(f"so({m})") else None
+        return self.classification.get_orthogonal_size()
 
     def __str__(self) -> str:
         return self.algebra

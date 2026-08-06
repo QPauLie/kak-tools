@@ -6,6 +6,7 @@ import numpy as np
 import pennylane as qml
 import pytest
 from paulie import get_pauli_string as paulie_pauli_string
+from paulie.classifier.classification import ClassificationException
 from pennylane.pauli import PauliWord
 from scipy.linalg import expm
 
@@ -156,6 +157,23 @@ class TestClassifyDLA:
     def test_non_orthogonal_algebra_has_no_so_size(self):
         info = classify_dla(expand(["XX", "YZ", "ZY"], 4))
         assert info.orthogonal_size is None or info.orthogonal_size >= 3
+
+    def test_simple_component_of_a_simple_algebra(self):
+        """The one summand of a simple algebra is the algebra itself."""
+        info = classify_dla(tfxy_strings(4))
+        assert info.is_simple
+        assert info.simple_component == DLAComponent("so", 8, 1)
+
+    def test_simple_component_of_a_semisimple_algebra_raises(self):
+        """Asking a semisimple algebra for its one summand is an error.
+
+        These three properties forward to PauLie, so the exception is PauLie's
+        `ClassificationException` rather than a local `ValueError`.
+        """
+        info = classify_dla(tfxy_strings(2))
+        assert not info.is_simple
+        with pytest.raises(ClassificationException):
+            _ = info.simple_component
 
     @pytest.mark.parametrize(
         "term, expected",
