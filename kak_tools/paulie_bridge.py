@@ -806,20 +806,7 @@ def kak_decomposition(
         hamiltonian = hamiltonian + coeff * algebra_basis[word]
 
     unitary = expm(time * hamiltonian)
-    try:
-        matrix_factors = recursive_bdi(unitary, irrep_size, validate=False, return_all=False)
-    except ValueError as exc:
-        if irrep_size % 2:
-            raise NotImplementedError(
-                f"PauLie classified this DLA as so({irrep_size}), which has an odd irrep "
-                "size, so the top-level BDI split is BDI(p, p+1) with p != q. The "
-                "horizontal cosine-sine decomposition then has a continuous O(q - p) "
-                "gauge freedom that `kak_tools.dense_cartan.bdi` does not currently fix, "
-                "and the k1 = k2.T relation fails for most Hamiltonians. Even irrep "
-                "sizes -- which is what qubit models with a free-fermionic DLA give -- "
-                "are fully supported."
-            ) from exc
-        raise
+    matrix_factors = recursive_bdi(unitary, irrep_size, validate=False, return_all=False)
 
     pauli_rotations = map_recursive_decomp_to_reducible(
         matrix_factors, mapping, signs, time=time, tol=tol, validate=False

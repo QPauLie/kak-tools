@@ -69,11 +69,17 @@ def bdi(u, p, q, is_horizontal=True, validate=True, **kwargs):
         # D = diag(+-1), under which (k1, a, k2) -> (k1, a diag(D, D), diag(D, D) k2).
         # That leaves k1 @ a @ k2 invariant and shifts theta_i by pi wherever d_i = -1,
         # so we can always repair the mismatch instead of giving up on it.
+        #
+        # For p != q the f = |p - q| directions that `a` leaves fixed carry a further
+        # O(f) gauge, which commutes with `a` and so is not fixed by this repair. At
+        # f <= 1 that group is O(1) = {+-1}, i.e. discrete and already covered by the
+        # sign flip below -- which is the case of an odd irrep size, where the top-level
+        # split is BDI(p, p+1). Beyond that the gauge is continuous and we still refuse.
         flips = []
         for i in range(p):
             if np.allclose(k11[:, i], k21[i]):
                 continue
-            if p == q and np.allclose(k11[:, i], -k21[i]):
+            if abs(p - q) <= 1 and np.allclose(k11[:, i], -k21[i]):
                 flips.append(i)
             else:
                 raise ValueError(
