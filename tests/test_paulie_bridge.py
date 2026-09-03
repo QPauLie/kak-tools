@@ -5,6 +5,8 @@ import itertools
 import numpy as np
 import pennylane as qml
 import pytest
+from paulie import get_pauli_string as paulie_pauli_string
+from paulie.classifier.classification import ClassificationException
 from pennylane.pauli import PauliWord
 from scipy.linalg import expm
 
@@ -53,6 +55,17 @@ def k_local_strings(pattern, n):
         "".join(["I"] * w + list(pattern) + ["I"] * (n - w - width))
         for w in range(n - width + 1)
     ]
+
+
+def two_local_strings(patterns, n):
+    """The generators PauLie's own two-local convention builds from ``patterns``.
+
+    This differs from :func:`expand` for one-site patterns: PauLie places them on
+    ``n - 1`` sites rather than all ``n``, which is what turns the Ising family into
+    so(2n - 1) instead of so(2n). Odd irrep sizes are therefore the ordinary case for
+    these models, not a corner one.
+    """
+    return [str(g) for g in paulie_pauli_string(patterns, n=n)]
 
 
 def expand(patterns, n):
@@ -144,6 +157,23 @@ class TestClassifyDLA:
     def test_non_orthogonal_algebra_has_no_so_size(self):
         info = classify_dla(expand(["XX", "YZ", "ZY"], 4))
         assert info.orthogonal_size is None or info.orthogonal_size >= 3
+
+    def test_simple_component_of_a_simple_algebra(self):
+        """The one summand of a simple algebra is the algebra itself."""
+        info = classify_dla(tfxy_strings(4))
+        assert info.is_simple
+        assert info.simple_component == DLAComponent("so", 8, 1)
+
+    def test_simple_component_of_a_semisimple_algebra_raises(self):
+        """Asking a semisimple algebra for its one summand is an error.
+
+        These three properties forward to PauLie, so the exception is PauLie's
+        `ClassificationException` rather than a local `ValueError`.
+        """
+        info = classify_dla(tfxy_strings(2))
+        assert not info.is_simple
+        with pytest.raises(ClassificationException):
+            _ = info.simple_component
 
     @pytest.mark.parametrize(
         "term, expected",
@@ -404,13 +434,39 @@ class TestKAKDecomposition:
         with pytest.raises(ValueError, match="coefficients for"):
             kak_decomposition(tfxy_strings(3), [1.0, 2.0])
 
-    def test_odd_irrep_size_raises_a_clear_error(self):
-        """so(m) with odd m is not supported, and says so explicitly."""
+    def test_odd_irrep_size_decomposes(self):
+        """so(m) with odd m decomposes, having once refused nearly every Hamiltonian.
+
+        The top-level split is then BDI(p, p+1), whose horizontal cosine-sine
+        decomposition carries an O(1) = {+-1} gauge on the one direction that `a`
+        leaves fixed. `bdi` used to repair that sign only for p == q and raise
+        otherwise, which rejected 0/25 to 2/25 of coefficient draws here.
+        """
         gens = expand(["XX", "XZ"], 5)
         info = classify_dla(gens)
         assert info.orthogonal_size % 2 == 1
-        with pytest.raises(NotImplementedError, match="odd irrep size"):
-            kak_decomposition(gens, np.linspace(0.2, 1.0, len(gens)), time=0.6)
+
+        result = kak_decomposition(gens, np.linspace(0.2, 1.0, len(gens)), time=0.6)
+        assert result.reconstruction_error < 1e-10
+
+    @pytest.mark.parametrize("generators", [["XX", "Z"], ["ZZ", "X"], ["XY", "Z"]])
+    @pytest.mark.parametrize("n", [4, 5, 6, 7])
+    def test_odd_irrep_size_over_many_coefficients(self, generators, n):
+        """Odd m holds up across coefficient draws, which is where it used to fail.
+
+        In PauLie's two-local convention these are so(2n - 1), so the transverse-field
+        Ising family lands on odd m -- it is the common case, not a corner one.
+        """
+        gens = two_local_strings(generators, n)
+        info = classify_dla(gens)
+        assert info.orthogonal_size == 2 * n - 1
+
+        for seed in range(20):
+            coefficients = np.random.default_rng(seed).normal(size=len(gens))
+            result = kak_decomposition(gens, coefficients, time=0.7)
+            assert result.reconstruction_error < 1e-12
+            # One rotation per algebra dimension, less any whose angle `tol` rounded away.
+            assert 0 < len(result.pauli_rotations) <= info.dim
 
     def test_non_orthogonal_algebra_raises_a_clear_error(self):
         """A DLA that is not (isomorphic to) so(m) is refused, with a pointer."""

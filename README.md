@@ -51,7 +51,7 @@ result.reconstruction_error           # ~1e-14; the rotations are checked agains
 | `DLAInfo.algebra` / `.dim` / `.components` | Name, dimension and summands | `get_algebra`, `get_dla_dim`, `get_subalgebras` |
 | `DLAInfo.matrix_basis` / `.orthogonal_basis` | Matrix basis of the algebra, as named and as `so(m)` | `get_algebra_basis`, `get_so_basis` |
 | `DLAInfo.is_algebra` | Isomorphism tests, including the low-rank coincidences | `Classification.is_algebra` |
-| `DLAInfo.orthogonal_size` | The `m` for which the DLA is `so(m)` | `get_simple_dim` + `is_algebra` |
+| `DLAInfo.orthogonal_size` / `.is_simple` / `.simple_component` | Which `so(m)` the DLA is, and whether it is simple | `get_orthogonal_size`, `is_simple`, `get_simple_component` |
 | `dla_pauli_basis` | Pauli-word basis of the DLA, with the dimension known in advance | `lie_closure_pauli_words(..., full_size=)` |
 | `labelled_matrix_basis` | PauLie's `so(m)` basis matrices, labelled with the Pauli words they correspond to | `get_so_basis` + `map_simple_to_irrep` |
 | `map_dla_to_irrep` | `map_simple_to_irrep`, with `n` supplied by the classification | `map_simple_to_irrep` |
@@ -61,8 +61,14 @@ result.reconstruction_error           # ~1e-14; the rotations are checked agains
 Nothing about the algebra is recomputed here: `DLAInfo` holds PauLie's `Classification`
 object and forwards to it, and `DLAComponent` is parsed straight out of PauLie's own
 naming. The bridge only supplies the one thing PauLie has no reason to know, namely which
-irrep size and involution `kak_tools` should be configured with — and even the `so(m)`
-identification is PauLie's `is_algebra`, not a local table of isomorphisms.
+irrep size and involution `kak_tools` should be configured with.
+
+`orthogonal_size`, `is_simple` and `simple_component` used to be derived here, from
+`get_simple_dim` plus a simplicity check over the parsed components. Which `so(m)` an
+algebra is isomorphic to, and whether it is simple, are properties of the algebra rather
+than of this package's configuration, so they now live on PauLie's `Classification` and
+these are one-line forwards. `simple_component` accordingly raises PauLie's
+`ClassificationException` rather than a local `ValueError`.
 
 The two bases are deliberately distinct. `matrix_basis` is `get_algebra_basis()` verbatim,
 so it follows the classified presentation — a DLA named `2*so(3)` is based in `6x6`.
@@ -83,11 +89,13 @@ pip install -e .        # pulls in paulie, which requires Python >= 3.12
 - The Pauli-word pipeline covers `so(m)` with a `BDI` involution, which is what
   `map_simple_to_irrep` implements. The low-rank coincidences are recognised, so a DLA
   PauLie names `2*so(3)` is still decomposed as `so(4)`.
-- **Odd `m` is not supported.** The top-level split is then `BDI(p, p+1)`, whose horizontal
-  cosine-sine decomposition has a gauge freedom that `dense_cartan.bdi` does not fix, and
-  the `k1 = k2.T` relation fails for most Hamiltonians. `kak_decomposition` raises a
-  `NotImplementedError` explaining this rather than returning a wrong answer. Even `m` --
-  what qubit models with a free-fermionic DLA give -- is fully supported.
+- Odd `m` is supported. The top-level split is then `BDI(p, p+1)`, so the `f = |p - q| = 1`
+  direction that the Cartan factor leaves fixed carries an extra `O(f)` gauge on top of the
+  usual diagonal sign gauge. At `f <= 1` that group is `O(1) = {+-1}`, i.e. discrete, and
+  `dense_cartan.bdi` repairs it like any other sign; it used to insist on `p == q` and
+  raise otherwise, which rejected almost every Hamiltonian with odd `m`. This is not a
+  corner case: in PauLie's two-local convention the transverse-field Ising family is
+  `so(2n - 1)`. For `f >= 2` the gauge is genuinely continuous and is still refused.
 - Algebras that are not `so(m)` are refused with a message naming what PauLie found. The
   matrix-level routines in `numerical_decompositions` cover the other classical types, and
   can be called directly.
@@ -108,7 +116,12 @@ pipeline algebras it was never run on by hand. All three are fixed here:
    decomposition with `k11[:, i] == -k21[i]`, which is a sign gauge that leaves
    `k1 @ a @ k2` invariant and can simply be repaired (flip the row and shift the angle by
    `pi`). It is now repaired. Whether it triggered was coefficient-dependent -- for `so(4)`
-   it was tripping on roughly three quarters of random Hamiltonians.
+   it was tripping on roughly three quarters of random Hamiltonians. The repair was at
+   first allowed only for `p == q`, on the grounds that `p != q` brings a continuous
+   `O(|p - q|)` gauge; but odd `m` gives `|p - q| = 1`, where that group is `{+-1}` and
+   therefore discrete. Widening the condition to `|p - q| <= 1` took the Ising family from
+   0/25 successful coefficient draws to 480/480 across `so(7)` through `so(13)`, at a worst
+   reconstruction error of 3.1e-13.
 3. `dense_cartan.group_matrix_to_reducible` read a rotation angle off `arcsin` of the
    off-diagonal entry, so a `2x2` block equal to `diag(-1, -1)` -- a rotation by exactly
    `pi`, with no off-diagonal entry to be found -- was silently dropped. Angles are now read
