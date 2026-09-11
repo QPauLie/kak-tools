@@ -40,7 +40,7 @@ from .numerical_decompositions import (
     diii_kak,
     c_kak,
     ci_kak,
-    cii_kak,  # to do
+    cii_kak,
     sympl_eig,
 )
 

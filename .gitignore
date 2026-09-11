@@ -3,6 +3,7 @@
 kak_tools.egg_info
 
 # Build artifacts
+/build/
 *.egg-info/
 __pycache__/
 *.pyc

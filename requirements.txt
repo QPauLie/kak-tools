@@ -1,9 +1,6 @@
-pennylane
+# Full development/notebook environment. The test environment can also be
+# installed on its own with: python -m pip install -r requirements-test.txt
+-r requirements-test.txt
 tqdm
-jax==0.4.28
-jaxlib==0.4.28
-matplotlib
-pytest
 jupyter
 black
-paulie

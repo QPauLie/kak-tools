@@ -1,32 +1,26 @@
 from itertools import combinations, product
+from collections.abc import Mapping
 import networkx as nx
 import numpy as np
-import matplotlib.pyplot as plt
 
 import pennylane as qml
 from pennylane.pauli import PauliWord, PauliSentence
 from pennylane import X, Y, Z
 from .pauli_dlas import anticom_graph_pauli
+from ._validation import (
+    finite_real_scalar, positive_integer, real_coefficients, resolve_bdi_partition,
+)
 
 
 def _anticom_graph_bdi(n, invol_kwargs):
-    """Build the anticommutativity graph of our standard basis of so(n) to be used with
-    BDI involutions. If p and q are not n/2 in the involution, they should be provided
-    in the ``invol_kwargs`` for the construction of the horizontal AC graph."""
-    assert set(invol_kwargs).issubset({"p", "q"})
-    p = invol_kwargs.get("p", n // 2)
-    q = invol_kwargs.get("q", n - p)
-    assert p + q == n, "If p and q are provided, they have to add up to n."
-
-    # edges = [((i, j), (i, l)) for i in range(n) for j in range(i+1, n) for l in range(j+1, n)]
-    # edges += [((i, j), (k, i)) for i in range(n) for j in range(i+1, n) for k in range(i)]
-    # edges += [((i, j), (j, l)) for i in range(n) for j in range(i+1, n) for l in range(j+1, n)]
-    # edges += [((i, j), (k, j)) for i in range(n) for j in range(i+1, n) for k in range(j)]
-    # edges = {(i, j): ([(i, l) for l in range(j+1, n)] + [(k, i) for k in range(i)] + [(j, l) for l in range(j+1, n)] + [(k, j) for k in range(j)]) for i, j in combinations(range(n),r=2)}
-    # graph = nx.Graph(edges)
+    """Horizontal rotation-plane anticommutation graph for BDI(p, q)."""
+    p, _ = resolve_bdi_partition(n, invol_kwargs)
     edges_hor = [((i, j), (i, l)) for i in range(p) for j in range(p, n) for l in range(j + 1, n)]
     edges_hor += [((i, j), (k, j)) for i in range(p) for j in range(p, n) for k in range(i + 1, p)]
-    horizontal_graph = nx.Graph(edges_hor)
+    horizontal_graph = nx.Graph()
+    # Include the isolated generator of BDI(1, 1).
+    horizontal_graph.add_nodes_from((i, j) for i in range(p) for j in range(p, n))
+    horizontal_graph.add_edges_from(edges_hor)
     return horizontal_graph
 
 
@@ -34,7 +28,6 @@ def _anticom_graph_diii(n, invol_kwargs):
     assert n % 2 == 0
     assert set(invol_kwargs) == set()
     m = n // 2
-    # See encoding description somewhere else
     nodes = [
         (i, j, _type, sign)
         for _type in "AB"
@@ -43,18 +36,7 @@ def _anticom_graph_diii(n, invol_kwargs):
     ]
     nodes_hor = [(i, j, _type, "-") for _type in "AB" for i, j in combinations(range(m), r=2)]
 
-    graph = nx.Graph()
-    graph.add_nodes_from(nodes)
-    edges = [(n1, n2) for n1, n2 in combinations(graph.nodes(), r=2) if n1[0] in n2 or n1[1] in n2]
-    graph.add_edges_from(edges)
-
-    graph_hor = nx.Graph()
-    graph_hor.add_nodes_from(nodes_hor)
-    edges_hor = [
-        (n1, n2) for n1, n2 in combinations(graph_hor.nodes(), r=2) if n1[0] in n2 or n1[1] in n2
-    ]
-    graph_hor.add_edges_from(edges_hor)
-    return graph, graph_hor
+    return _anticom_graph_from_labels(nodes), _anticom_graph_from_labels(nodes_hor)
 
 
 def _anticom_graph_aiii(n, invol_kwargs):
@@ -65,24 +47,22 @@ def _anticom_graph_aiii(n, invol_kwargs):
     nodes = [(i, j, t) for t in "XYZ" for i, j in combinations(range(m), r=2) if t != Z or i == j]
     nodes_hor = [(i, j, t) for t in "XY" for i, j in product(range(m), range(m, n))]
 
+    return _anticom_graph_from_labels(nodes), _anticom_graph_from_labels(nodes_hor)
+
+
+def _anticom_graph_from_labels(nodes):
+    """Connect DIII/AIII basis labels whose first two entries share an index."""
     graph = nx.Graph()
     graph.add_nodes_from(nodes)
-    edges = [(n1, n2) for n1, n2 in combinations(graph.nodes(), r=2) if n1[0] in n2 or n1[1] in n2]
-    graph.add_edges_from(edges)
-
-    graph_hor = nx.Graph()
-    graph_hor.add_nodes_from(nodes_hor)
-    edges_hor = [
-        (n1, n2) for n1, n2 in combinations(graph_hor.nodes(), r=2) if n1[0] in n2 or n1[1] in n2
-    ]
-    graph_hor.add_edges_from(edges_hor)
-    return graph, graph_hor
+    graph.add_edges_from(
+        (a, b) for a, b in combinations(graph.nodes(), 2) if a[0] in b or a[1] in b
+    )
+    return graph
 
 
 def anticom_graph_irrep(n, invol_type=None, invol_kwargs=None):
     """Create an anticommutation graph for an irrep of a simple algebra,
     in a basis adapted to a given involution type."""
-    # assume even n and BDI* involution for now.
     if invol_type == "BDI":
         return _anticom_graph_bdi(n, invol_kwargs)
 
@@ -92,7 +72,7 @@ def anticom_graph_irrep(n, invol_type=None, invol_kwargs=None):
     elif invol_type == "AIII":
         return _anticom_graph_aiii(n, invol_kwargs)
 
-    NotImplementedError("Only BDI, DIII and AIII are implemented.")
+    raise NotImplementedError("Only BDI, DIII and AIII are implemented.")
 
 
 def map_horizontal_subgraph(pauli_graph, horizontal_graph):
@@ -100,8 +80,7 @@ def map_horizontal_subgraph(pauli_graph, horizontal_graph):
     a subgraph in the horizontal anticommutation graph of the former that is isomorphic
     to the anticommutation graph of the latter."""
     graph_matcher = nx.algorithms.isomorphism.GraphMatcher(horizontal_graph, pauli_graph)
-    mapping = next(graph_matcher.subgraph_isomorphisms_iter())
-    return mapping
+    return next(graph_matcher.subgraph_isomorphisms_iter())
 
 
 def _node_commutator(node1, node2, invol_type):
@@ -121,68 +100,6 @@ def _node_commutator(node1, node2, invol_type):
         if a > b:
             a, b = b, a
         return (a, b, new_t, new_s)
-
-    raise ValueError
-
-
-def _node_commutator_sign_bdi(node1, node2):
-    if node1[0] == node2[0]:
-        if node1[1] < node2[1]:
-            return -1
-        return 1
-    if node1[1] == node2[1]:
-        if node1[0] < node2[0]:
-            return -1
-        return 1
-    if node1[0] == node2[1]:
-        if node1[1] < node2[0]:
-            return 1
-        return -1
-    if node1[1] == node2[0]:
-        if node1[0] < node2[1]:
-            return 1
-        return -1
-    raise ValueError
-
-
-"""
-def _node_commutator_sign_diii(node1, node2):
-    i, j, t1, s1 = node1
-    k, l, t2, s2 = node2
-    if t1 == t2 == "A":
-        # Commutator sign does not depend on s1, s2
-        if (i == k and j < l) or (j == l and i < k) or (i == l and j > k) or (j == k and i > l):
-            return -1
-        return 1
-    if t1 == t2 == "B":
-        if i == k:
-            return (-1) ** ((j > l) + (s1 == s2))
-        if i == l:
-            return (-1) ** ((j > k) + (s1 == "+"))
-        if j == k:
-            return (-1) ** ((i > l) + (s2 == "+"))
-        if j == l:
-            return (-1) ** ((i > k) + 1)
-    if t1 == "A" and t2 == "B":
-        if i == k:
-            return -1
-        if i == l:
-            return (-1) ** (s2 == "+")
-        if j == k:
-            return 1
-        if j == l:
-            return (-1) ** (s2 == "-")
-    if t1 == "B" and t2 == "A":
-        return -1 * _node_commutator_sign_diii(node2, node1)
-    raise ValueError
-"""
-
-
-def _node_commutator_sign(node1, node2, invol_type):
-    if invol_type == "BDI":
-        return _node_commutator_sign_bdi(node1, node2)
-    elif invol_type == "DIII":
-        return _node_commutator_sign_diii(node1, node2)
 
     raise ValueError
 
@@ -222,16 +139,12 @@ def all_pre_commutators(node, n, invol_type):
 
 
 def choose_generic_first_missing(missing, n, invol_type):
-    if invol_type == "BDI":
+    if invol_type in {"BDI", "DIII"}:
         cand = missing[0]
         assert cand[0] == 0
-        return cand, 0
-
-    if invol_type == "DIII":
-        cand = missing[0]
-        assert cand[0] == 0
-        assert cand[2] == "A"
-        assert cand[3] == "+"
+        if invol_type == "DIII":
+            assert cand[2] == "A"
+            assert cand[3] == "+"
         return cand, 0
 
 
@@ -289,47 +202,68 @@ def map_choice(mapping, missing, missing_ops, n, invol_type):
     raise ValueError("No compatible choice could be made from the missing operators.")
 
 
-sign_map = {
-    "X": {"X": 1.0, "Y": -1j, "Z": 1j},
-    "Y": {"X": 1j, "Y": 1.0, "Z": -1j},
-    "Z": {"X": -1j, "Y": 1j, "Z": 1.0},
-}
+def _so_signs_from_star(mapping, n, star_signs=None):
+    """Check the Pauli basis and determine all signs from its (0, i) star."""
+    n = positive_integer(n, "n")
+    if n < 2:
+        raise ValueError("An so(n) Pauli mapping requires n >= 2.")
+    planes = set(combinations(range(n), 2))
+    if not isinstance(mapping, Mapping) or set(mapping) != planes:
+        raise ValueError("The mapping must contain every so(n) rotation plane exactly once.")
+    words = list(mapping.values())
+    if not all(isinstance(word, PauliWord) for word in words) or len(set(words)) != len(words):
+        raise ValueError("The mapping must be a bijection onto distinct PauliWords.")
+    if any(pauli not in ("I", "X", "Y", "Z") for word in words for pauli in word.values()):
+        raise ValueError("PauliWord entries must contain only I, X, Y, Z.")
 
-
-def _comm_sign_pws(a, b):
-    wires = set(a) & set(b)
-    return np.prod([sign_map[a[w]][b[w]] for w in wires])
-
-
-def make_signs(mapping, n, invol_type):
-    assert invol_type == "BDI"
-    assert len(mapping) == (n**2 - n) // 2
-    signs = {(0, i): 1 for i in range(1, n)}
-    signs[(0, n // 2)] = -1
-    while len(signs) < len(mapping):
-        for (n1, pre_sign1), (n2, pre_sign2) in combinations(signs.items(), r=2):
-            if not (n1[0] in n2 or n1[1] in n2):
-                continue
-            node_com_sign = _node_commutator_sign(n1, n2, invol_type)
-            com_node = _node_commutator(n1, n2, invol_type)
-            pw_com_sign = (_comm_sign_pws(mapping[n1], mapping[n2]) / 1j).real
-            # pw_com_sign = (mapping[n1]._commutator(mapping[n2])[1] / -2j).real
-            relative_sign = node_com_sign * pre_sign1 * pre_sign2 / pw_com_sign
-            if signs.get(com_node, relative_sign) != relative_sign:
-                raise ValueError("Inconsistency")
-            signs[com_node] = relative_sign
+    if star_signs is None:
+        signs = {(0, i): 1 for i in range(1, n)}
+        signs[(0, n // 2)] = -1
+    else:
+        signs = {(0, i): star_signs[(0, i)] for i in range(1, n)}
+    for i, j in combinations(range(1, n), 2):
+        word, coefficient = mapping[(0, i)]._commutator(mapping[(0, j)])
+        if coefficient not in (-2j, 2j) or word != mapping[(i, j)]:
+            raise ValueError(f"The so(n) star commutator has the wrong Pauli word at plane {(i, j)}.")
+        signs[(i, j)] = int((2j * signs[(0, i)] * signs[(0, j)] / coefficient).real)
     return signs
 
 
-def map_simple_to_irrep(ops, horizontal_ops=None, n=None, invol_type=None, invol_kwargs=None):
-    """Map a list of Pauli words that is guaranteed to form a simple Lie algebra of type
-    ``dla_type`` to the elements in an irreducible representation of the algebra."""
-    assert all(isinstance(op, PauliWord) for op in ops)
-    assert isinstance(n, int)
-    assert invol_type in {"AI", "AII", "AIII", "BDI", "CI", "CII", "DIII"}
+def _validate_so_mapping(mapping, signs, n):
+    """Verify the Lie map i*P_ij -> 2*sign_ij*(E_ij-E_ji) and normalize signs.
+
+    The star relation [P_0i, P_0j] = 2j*s_0i*s_0j/s_ij*P_ij
+    makes the star Pauli words Clifford generators. Their pair products then
+    satisfy every remaining so(n) commutator. Distinct Pauli words ensure
+    injectivity, including for so(4); so(2) has no star pairs to check.
+    Any valid choice of star signs is accepted.
+    """
+    if not isinstance(mapping, Mapping) or not isinstance(signs, Mapping) or set(signs) != set(mapping):
+        raise ValueError("The signs must contain one sign for every mapped rotation plane.")
+    signs = {plane: finite_real_scalar(sign, f"sign for {plane}") for plane, sign in signs.items()}
+    if any(sign not in (-1.0, 1.0) for sign in signs.values()):
+        raise ValueError("Each mapping sign must be +1 or -1.")
+    expected = _so_signs_from_star(mapping, n, signs)
+    if signs != expected:
+        raise ValueError("The mapping signs do not satisfy the so(n) star commutators.")
+    return signs
+
+
+def make_signs(mapping, n, invol_type):
+    """Construct consistent BDI signs directly, retaining the standard star gauge."""
     assert invol_type == "BDI"
-    if invol_type in {"AII", "DIII"}:
-        assert n % 2 == 0
+    return _so_signs_from_star(mapping, n)
+
+
+def map_simple_to_irrep(ops, horizontal_ops=None, n=None, invol_type=None, invol_kwargs=None):
+    """Map a complete so(n) Pauli-word basis to signed BDI rotation planes.
+
+    ``horizontal_ops`` supplies the horizontal generators or their initial mapping.
+    Other involutions and automatic horizontal-generator selection are unsupported.
+    """
+    assert all(isinstance(op, PauliWord) for op in ops)
+    n = positive_integer(n, "n")
+    assert invol_type == "BDI"
     if invol_kwargs is None:
         invol_kwargs = {}
 
@@ -352,16 +286,12 @@ def map_simple_to_irrep(ops, horizontal_ops=None, n=None, invol_type=None, invol
 
         mapping = map_horizontal_subgraph(pauli_graph, horizontal_graph)
 
-    # This is BDI specific for now.
     all_nodes = list(combinations(range(n), r=2))
 
     mapping = map_hor_com_hor(mapping, pauli_graph, invol_type=invol_type)
     missing = [node for node in all_nodes if node not in mapping]
     missing_ops = list(set(ops).difference(set(mapping.values())))
 
-    prog_state = (mapping, missing, missing_ops)
-
-    # First completion round
     mapping, missing, missing_ops = map_coms(
         mapping, missing, missing_ops, n, invol_type=invol_type
     )
@@ -376,24 +306,11 @@ def map_simple_to_irrep(ops, horizontal_ops=None, n=None, invol_type=None, invol
     assert not missing_ops
     assert len(mapping) == len(all_nodes)
 
-    signs = make_signs(mapping, n, invol_type)
-
-    return mapping, signs
+    return mapping, make_signs(mapping, n, invol_type)
 
 
 def map_irrep_to_matrices(mapping, signs, n, invol_type):
     return {op: signs[node] * E(node, n, invol_type) for node, op in mapping.items()}
-
-
-"""
-def irrep_dot(coeffs, generators, mapping, signs, n, invol_type):            
-    out = 0.
-    inv_mapping = {op: node for node, op in mapping.items() if op in generators}
-    for c, gen in zip(coeffs, generators):
-        node = inv_mapping[gen]
-        out += c * signs[node] * E(node, n, invol_type)
-    return out
-"""
 
 
 def irrep_dot(coeffs, generators, mapping, signs=None, n=None, invol_type=None):
@@ -407,22 +324,58 @@ def irrep_dot(coeffs, generators, mapping, signs=None, n=None, invol_type=None):
       what :func:`map_simple_to_irrep` returns.
 
     The legacy positional call ``irrep_dot(coeffs, generators, mapping, n, invol_type)``
-    still works.
+    still works. Coefficients must be finite and real, with exactly one per
+    generator. An empty sum returns an ``(n, n)`` zero matrix.
+
+    Raises:
+        ValueError: If dimensions or coefficients are invalid, a generator is
+            missing from the mapping, or a selected BDI node/sign is invalid.
     """
     if isinstance(signs, (int, np.integer)):
         # Legacy positional signature: signs slot held n, n slot held invol_type.
-        signs, n, invol_type = None, int(signs), invol_type if invol_type is not None else n
+        signs, n, invol_type = None, signs, invol_type if invol_type is not None else n
 
+    n = positive_integer(n, "n")
     generators = list(generators)
-    if signs is None:
-        inv_mapping = {op: (node, sign) for node, (op, sign) in mapping.items() if op in generators}
-    else:
-        inv_mapping = {op: (node, signs[node]) for node, op in mapping.items() if op in generators}
+    coeffs = real_coefficients(coeffs, len(generators))
+    if not isinstance(mapping, Mapping) or (signs is not None and not isinstance(signs, Mapping)):
+        raise ValueError("mapping and signs must be dictionaries or other mappings.")
+    inv_mapping = {}
+    for node, entry in mapping.items():
+        if signs is None:
+            try:
+                op, sign = entry
+            except (TypeError, ValueError) as exc:
+                raise ValueError("Each mapping entry must contain a (generator, sign) pair.") from exc
+        else:
+            op = entry
+        if op not in generators:
+            continue
+        if signs is not None:
+            if node not in signs:
+                raise ValueError(f"Missing sign for mapped generator {op!r} at node {node!r}.")
+            sign = signs[node]
+        if op in inv_mapping:
+            raise ValueError(f"Generator {op!r} is assigned to more than one mapping node.")
+        if invol_type == "BDI":
+            if (
+                not isinstance(node, tuple) or len(node) != 2
+                or any(isinstance(index, (bool, np.bool_)) or not isinstance(index, (int, np.integer))
+                       for index in node)
+                or not 0 <= node[0] < node[1] < n
+            ):
+                raise ValueError(f"Invalid BDI mapping node {node!r}; expected 0 <= i < j < {n}.")
+            sign = finite_real_scalar(sign, f"sign for node {node!r}")
+            if sign not in (-1.0, 1.0):
+                raise ValueError(f"The BDI sign for node {node!r} must be +1 or -1.")
+        inv_mapping[op] = (node, sign)
 
-    out = 0.0
+    out = np.zeros((n, n))
     for c, gen in zip(coeffs, generators):
+        if gen not in inv_mapping:
+            raise ValueError(f"Generator {gen!r} is missing from the irrep mapping.")
         node, sign = inv_mapping[gen]
-        out += c * sign * E(node, n, invol_type)
+        out = out + c * sign * E(node, n, invol_type)
     return out
 
 
@@ -437,6 +390,11 @@ def map_matrix_to_reducible(matrix, mapping, signs, invol_type):
 
 
 def E(node, n, invol_type):
+    if invol_type not in {"BDI", "DIII", "AIII"}:
+        raise NotImplementedError(
+            f"Matrix generators for involution {invol_type!r} are not implemented; "
+            "choose BDI, DIII or AIII."
+        )
     if invol_type == "BDI":
         e = np.zeros((n, n))
         i, j = node
@@ -458,7 +416,7 @@ def E(node, n, invol_type):
             e[i + n // 2, j] = -sign
 
     if invol_type == "AIII":
-        e = np.zeros((n, n))
+        e = np.zeros((n, n), dtype=complex)
         i, j, t = node
         if t == "X":
             e[i, j] = e[j, i] = 1j
@@ -466,8 +424,8 @@ def E(node, n, invol_type):
             e[i, j] = 1
             e[j, i] = -1
         if t == "Z":
-            e[i, i] = 1
-            e[i + 1, i + 1] = -1
+            e[i, i] = 1j
+            e[i + 1, i + 1] = -1j
 
     return e
 
@@ -496,40 +454,21 @@ def make_so_2n_horizontal_mapping(n):
 
 
 def make_so_2n_full_mapping(n, xy_symmetric=False):
-    """Create a default reducible-to-irreducible mapping for all operators of so(2n) implemented
-    by the transverse field XY model. The irrep is compatible with a BDI decomposition and
-    the Hamiltonian terms (XX coupling, YY coupling, Z field) to be horizontal. In particular
-    the mapping created by `make_so_2n_horizontal_mapping` is contained in the mapping created
-    here."""
+    """Return the TF-XY so(2n) Pauli mapping and its historical sign convention.
+
+    Contains :func:`make_so_2n_horizontal_mapping`; XX, YY and Z terms are horizontal.
+    """
     if xy_symmetric:
         return _so_2n_full_mapping_xy(n)
 
-    mapping = {}
-    # upper left triangle
-    mapping |= {
-        (i, j): PauliWord({i: "X", j: "Y"} | {w: "Z" for w in range(i + 1, j)})
-        for i in range(n - 1)
-        for j in range(i + 1, n)
-    }
-    # lower right triangle
-    mapping |= {
-        (n + i, n + j): PauliWord({i: "Y", j: "X"} | {w: "Z" for w in range(i + 1, j)})
-        for i in range(n - 1)
-        for j in range(i + 1, n)
-    }
-    # upper right triangle of off-diagonal
-    mapping |= {
-        (i, n + j): PauliWord({i: "X", j: "X"} | {w: "Z" for w in range(i + 1, j)})
-        for i in range(n - 1)
-        for j in range(i + 1, n)
-    }
-    # lower left triangle of off-diagonal
-    mapping |= {
-        (j, n + i): PauliWord({i: "Y", j: "Y"} | {w: "Z" for w in range(i + 1, j)})
-        for i in range(n - 1)
-        for j in range(i + 1, n)
-    }
-    # diagonal of off-diagonal
+    upper_left, lower_right, upper_right, lower_left = {}, {}, {}, {}
+    for i, j in combinations(range(n), 2):
+        chain = {w: "Z" for w in range(i + 1, j)}
+        upper_left[(i, j)] = PauliWord({i: "X", j: "Y"} | chain)
+        lower_right[(n + i, n + j)] = PauliWord({i: "Y", j: "X"} | chain)
+        upper_right[(i, n + j)] = PauliWord({i: "X", j: "X"} | chain)
+        lower_left[(j, n + i)] = PauliWord({i: "Y", j: "Y"} | chain)
+    mapping = upper_left | lower_right | upper_right | lower_left
     mapping |= {(i, n + i): PauliWord({i: "Z"}) for i in range(n)}
 
     signs = {(i, n + i): -1 for i in range(n)}
@@ -539,40 +478,23 @@ def make_so_2n_full_mapping(n, xy_symmetric=False):
 
 
 def make_so_2n_full_mapping_str(n, xy_symmetric=False):
-    """Create a default reducible-to-irreducible mapping for all operators of so(2n) implemented
-    by the transverse field XY model. The irrep is compatible with a BDI decomposition and
-    the Hamiltonian terms (XX coupling, YY coupling, Z field) to be horizontal. In particular
-    the mapping created by `make_so_2n_horizontal_mapping` is contained in the mapping created
-    here."""
+    """Return TF-XY rotation planes as (compressed Pauli string, sign) entries.
+
+    Numbers count leading/trailing identities and intervening Z factors.
+    The Z-field sign is -1 in this string convention.
+    """
     if xy_symmetric:
         raise ValueError
-        return _so_2n_full_mapping_xy_str(n)
 
-    mapping = {}
-    # upper left triangle
-    mapping |= {
-        (i, j): (f"{i}X{j - i - 1}Y{n-j-1}", 1) for i in range(n - 1) for j in range(i + 1, n)
-    }
-    # lower right triangle
-    mapping |= {
-        (n + i, n + j): (f"{i}Y{j - i - 1}X{n-j-1}", -1)
-        for i in range(n - 1)
-        for j in range(i + 1, n)
-    }
-    # upper right triangle of off-diagonal
-    mapping |= {
-        (i, n + j): (f"{i}X{j - i - 1}X{n-j-1}", 1) for i in range(n - 1) for j in range(i + 1, n)
-    }
-    # lower left triangle of off-diagonal
-    mapping |= {
-        (j, n + i): (f"{i}Y{j - i - 1}Y{n-j-1}", 1) for i in range(n - 1) for j in range(i + 1, n)
-    }
-    # diagonal of off-diagonal
+    upper_left, lower_right, upper_right, lower_left = {}, {}, {}, {}
+    for i, j in combinations(range(n), 2):
+        upper_left[(i, j)] = (f"{i}X{j - i - 1}Y{n-j-1}", 1)
+        lower_right[(n + i, n + j)] = (f"{i}Y{j - i - 1}X{n-j-1}", -1)
+        upper_right[(i, n + j)] = (f"{i}X{j - i - 1}X{n-j-1}", 1)
+        lower_left[(j, n + i)] = (f"{i}Y{j - i - 1}Y{n-j-1}", 1)
+    mapping = upper_left | lower_right | upper_right | lower_left
     mapping |= {(i, n + i): (f"{i}Z{n - i - 1}", -1) for i in range(n)}
 
-    # signs = {(i, n+i): -1 for i in range(n)}
-    # signs |= {(i, j): 1 for i in range(n) for j in range(i+1, 2 * n)}
-    # signs |= {(i, j): -1 for i in range(n, 2*n) for j in range(i, 2*n)}
     return mapping
 
 

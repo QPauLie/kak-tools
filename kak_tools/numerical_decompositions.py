@@ -1,13 +1,15 @@
 import numpy as np
 from numpy.linalg import norm
-from scipy.linalg import eig, cossin, det, schur
+from scipy.linalg import block_diag, eig, cossin, det, schur
+
+from ._symplectic_csd import compact_symplectic_csd
+from .dense_cartan import bdi, _cartan_matrix
 
 _validate_default = True
 
 
 def real_eig(mat):
     """Compute real eigenvectors of a symmetric matrix A.T=A."""
-    # n = mat.shape[0] // 2
     eigvals, eigvecs = eig(mat)
     new_eigvals = np.zeros_like(eigvals)
     new_eigvecs = np.zeros_like(eigvecs)
@@ -26,11 +28,7 @@ def real_eig(mat):
         non_zero_idx = np.where(vec)[0][0]
         conj_phase = alt_vec[non_zero_idx] / vec[non_zero_idx]
         if np.allclose(alt_vec, conj_phase * vec):
-            #print(vec)
-            #print(f"{conj_phase=}")
             vec *= np.sqrt(conj_phase)
-            #print(vec)
-            #assert np.allclose(vec.imag, 0.0, atol=3e-8)
             vec = vec.real
             new_eigvecs[:, new_eig_idx] = vec
             new_eigvals[new_eig_idx] = eigvals[eig_idx]
@@ -84,53 +82,8 @@ def gram_schmidt(vecs):
     return orthogonalised
 
 
-def _ai_kak(u, validate=_validate_default):
-
-    # u is a (square) np.array to ai-kak;
-    # we follow the procedure in the overleaf
-
-    dim = u.shape[0]
-    evals, o1 = eig(u @ u.T)
-
-    # degenerate (irl this means approximately degenerate) eigenvals can produce complex vectors,
-    # but we can ``realise'' (lol) them as discussed in the overleaf.
-    # note np.linalg.eig does not by default produce orthogonal eigenvecs,
-    # and even if it did this wouldn't survive the realising,
-    # so we have to press the gram-schmidt button.
-
-    unique_evals = np.unique(evals.round(5))
-    if len(unique_evals) != dim:
-
-        for v in unique_evals:
-
-            inds = np.where(np.abs(evals - v) < 1e-5)[0]
-            if inds.shape[0] == 1:  # lonely eigenvalue
-                continue
-
-            o1[:, inds] = gram_schmidt(o1[:, inds].real)
-
-    if det(o1) < 0:
-        o1[:, 0] *= -1
-
-    d = np.diag(np.sqrt(evals))
-    o2 = np.conj(d) @ o1.T @ u
-
-    if validate:
-        # note somewhat large tolerance values; funny numerical behaviour for n > 75,
-        # where n > 75 seems to be a suprisingly precise statement...
-
-        assert np.allclose(o1.imag, 0.0, atol=1e-6)
-        assert np.allclose(o1 @ o1.T, np.eye(dim), atol=1e-6)
-        assert np.allclose(u @ u.T, o1 @ d @ d @ o1.T, atol=1e-6)
-        assert np.allclose(u, o1 @ d @ np.conj(d) @ o1.T @ u, atol=1e-6)
-        assert np.allclose(o2.T @ o2, np.eye(dim), atol=1e-6)
-
-    return o1, d, o2
-
-
 def ai_kak(u, validate=_validate_default):
 
-    Delta = u @ u.T
     evals, o1 = real_eig(u @ u.T)
 
     if det(o1) < 0:
@@ -201,70 +154,89 @@ def sympl_real_eig_diii(mat, J):
     assert mat.shape[0] % 2 == 0
     n = mat.shape[0] // 2
     eigvals, eigvecs = eig(mat)
+    endpoint_tolerance = 32 * np.finfo(eigvals.real.dtype).eps * mat.shape[0]
     quadruples = np.zeros_like(eigvecs)
     quadruple_eigvals = np.zeros_like(eigvals)
     minus_one_eigvecs = []
     plus_one_eigvecs = []
+    chosen = []
 
-    eig_idx = 0
+    def real_unit_vector(vec, basis):
+        vec = vec.copy()
+        if basis:
+            previous = np.column_stack(basis)
+            for _ in range(2):
+                vec -= previous @ (previous.T @ vec)
+        length = norm(vec)
+        if not np.isfinite(length) or length <= endpoint_tolerance:
+            raise ValueError("DIII could not complete an independent real symplectic basis.")
+        return vec / length
+
     d = 0
-    while eigvecs.shape[1]:
+    while len(chosen) < 2 * n:
+        if not eigvecs.shape[1]:
+            raise ValueError("DIII could not complete the real symplectic basis.")
+        # Near +/-1, small residuals of used eigenvectors can survive projection.
+        # Complete the basis from its strongest remaining direction, not a
+        # sequential residual that may only contain eigenvector roundoff.
+        pivot = int(np.argmax(norm(eigvecs, axis=0)))
+        eigvecs[:, [0, pivot]] = eigvecs[:, [pivot, 0]]
+        eigvals[[0, pivot]] = eigvals[[pivot, 0]]
         vec0 = eigvecs[:, 0]
         _norm = norm(vec0)
-        if _norm < 1e-12:
-            eigvecs = eigvecs[:, 1:]
-            eig_idx += 1
-            continue
+        if not np.isfinite(_norm) or _norm <= endpoint_tolerance:
+            raise ValueError("DIII has insufficient independent eigenvectors for a complete basis.")
         vec0 /= _norm
-        vec2 = vec0.conj()
-
-        non_zero_idx = np.where(vec0)[0][0]
-        conj_phase = vec2[non_zero_idx] / vec0[non_zero_idx]
-        if np.allclose(vec2, conj_phase * vec0):
-            vec0 *= np.sqrt(conj_phase)
-            assert np.allclose(vec0.imag, 0.0)
-            vec0 = vec0.real
+        eigenvalue = eigvals[0]
+        if min(abs(eigenvalue - 1), abs(eigenvalue + 1)) <= endpoint_tolerance:
+            # A numerically real eigenvalue may have a complex LAPACK eigenvector
+            # in a repeated +/-1 space. Its real and imaginary parts belong to
+            # that same real invariant space; each contributes a J-pair, not an
+            # independent complex quartet. Use the stronger part for stability.
+            vec0 = max((vec0.real, vec0.imag), key=norm)
+            vec0 = real_unit_vector(vec0, chosen)
             vecs = [J @ vec0, vec0]
 
             # store real symplectic eigenvectors
-            assert np.isclose(eigvals[eig_idx], 1.0) or np.isclose(eigvals[eig_idx], -1.0)
-            if eigvals[eig_idx] > 0:
+            if eigenvalue.real > 0:
                 plus_one_eigvecs.extend(vecs)
             else:
                 minus_one_eigvecs.extend(vecs)
             remove_vecs = vecs
         else:
+            if len(chosen) + 4 > 2 * n:
+                raise ValueError("DIII has no room for an independent complex eigenvalue quartet.")
             overlap = np.dot(vec0, vec0)
-            new_vec = (-0.5 * np.angle(overlap)) * vec0
-            vec2 = new_vec.real / norm(new_vec.real)
-            vec3 = new_vec.imag / norm(new_vec.imag)
+            # Rotate the phase so real and imaginary parts are orthogonal.
+            # Multiplication by the angle itself annihilates vectors at phase zero.
+            new_vec = np.exp(-0.5j * np.angle(overlap)) * vec0
+            vec2 = real_unit_vector(new_vec.real, chosen)
+            vec3 = real_unit_vector(new_vec.imag, chosen + [vec2, J @ vec2])
             vec0 = J @ vec2
             vec1 = J @ vec3
-            # quad = [J @ vec2, J @ vec3, vec2, vec3]
             quadruples[:, 2 * d] = vec0
             quadruples[:, 2 * d + 1] = vec1
             quadruples[:, 2 * d + n] = vec2
             quadruples[:, 2 * d + n + 1] = vec3
-            quadruple_eigvals[2 * d] = quadruple_eigvals[2 * d + n + 1] = eigvals[eig_idx]
-            quadruple_eigvals[2 * d + 1] = quadruple_eigvals[2 * d + n] = np.conj(eigvals[eig_idx])
+            quadruple_eigvals[2 * d] = quadruple_eigvals[2 * d + n + 1] = eigenvalue
+            quadruple_eigvals[2 * d + 1] = quadruple_eigvals[2 * d + n] = np.conj(eigenvalue)
 
             d += 1
             remove_vecs = [vec0, vec1, vec2, vec3]
 
-        # Remove used eigvec and project out contribution of remaining eigvecs in directions
-        # of single_vec
         eigvecs = eigvecs[:, 1:]
-        for _vec in remove_vecs:
-            eigvecs -= np.outer(_vec, _vec.conj() @ eigvecs)
-
-        eig_idx += 1
+        eigvals = eigvals[1:]
+        chosen.extend(remove_vecs)
+        previous = np.column_stack(remove_vecs)
+        for _ in range(2):
+            eigvecs -= previous @ (previous.T @ eigvecs)
 
     two_f = len(minus_one_eigvecs)
-    assert two_f % 4 == 0
+    if two_f % 4:
+        raise ValueError("DIII requires the -1 eigenspace to have dimension divisible by four.")
     f = two_f // 2
 
     main_diag = np.real(quadruple_eigvals)
-    print(quadruples.shape)
     if f > 0:
         minus_one_eigvecs = np.stack(minus_one_eigvecs)
         quadruples[:, 2 * d : 2 * d + f] = minus_one_eigvecs[::2].T
@@ -278,7 +250,6 @@ def sympl_real_eig_diii(mat, J):
         main_diag[2 * d + f : n] = 1
         main_diag[2 * d + f + n : 2 * n] = 1
 
-    upper_diag = np.zeros(2 * n)
     upper_diag = -np.imag(quadruple_eigvals)
     if n % 2:
         upper_diag[1:n:2] = 0
@@ -287,6 +258,9 @@ def sympl_real_eig_diii(mat, J):
         upper_diag[1::2] = 0
     upper_diag = upper_diag[: 2 * n - 1]
     mu = np.diag(main_diag) + np.diag(upper_diag, k=1) - np.diag(upper_diag, k=-1)
+
+    if not np.allclose(quadruples.T @ quadruples, np.eye(2 * n), atol=4 * endpoint_tolerance, rtol=0):
+        raise ValueError("DIII could not form an orthonormal real symplectic basis.")
 
     return mu, quadruples
 
@@ -297,12 +271,9 @@ def sympl_real_eig_ci(mat, J):
     eigvals, eigvecs = eig(mat)
     new_eigvecs = np.zeros_like(eigvecs)
     new_eigvals = np.zeros_like(eigvals)
-    # minus_one_eigvecs = []
-    # plus_one_eigvecs = []
 
     eig_idx = 0
     new_eig_idx = 0
-    # d = 0
     while eigvecs.shape[1]:
         vec0 = eigvecs[:, 0]
         _norm = norm(vec0)
@@ -313,7 +284,7 @@ def sympl_real_eig_ci(mat, J):
         vec0 /= _norm
         vec2 = vec0.conj()
 
-        non_zero_idx = np.where(vec0)[0][0]
+        non_zero_idx = int(np.argmax(np.abs(vec0)))
         conj_phase = vec2[non_zero_idx] / vec0[non_zero_idx]
         if np.allclose(vec2, conj_phase * vec0):
             vec0 *= np.sqrt(conj_phase)
@@ -330,7 +301,9 @@ def sympl_real_eig_ci(mat, J):
             new_eig_idx += 1
         else:
             overlap = np.dot(vec0, vec0)
-            new_vec = (-0.5 * np.angle(overlap)) * vec0
+            # A phase rotation preserves the vector norm and makes its real and
+            # imaginary parts orthogonal, including degenerate eigenspaces.
+            new_vec = np.exp(-0.5j * np.angle(overlap)) * vec0
             vec2 = new_vec.real / norm(new_vec.real)
             vec3 = new_vec.imag / norm(new_vec.imag)
             vec0 = J @ vec2
@@ -424,79 +397,26 @@ def aiii_kak(u, p, q, validate=_validate_default):
 
 
 def bdi_kak(o, p, q, validate=_validate_default):
-    """BDI(p, q) Cartan decomposition of special orthogonal o
-
-    Args:
-        o (np.ndarray): The special orthogonal matrix to decompose. It must be square-shaped with
-            size p+q.
-        p (int): First subspace size for SO(p) x SO(q), the vertical subspace
-        q (int): Second subspace size for SO(p) x SO(q), the vertical subspace
-
-    Returns:
-        np.ndarray: The first K from the KAK decomposition
-        np.ndarray: The exponentiated Cartan subalgebra element A from the KAK decomposition
-        np.ndarray: The second K from the KAK decomposition
-
-
-    The input ``o`` and all three output matrices are group elements, not algebra elements.
-    """
+    """Return the three group matrices of BDI(p, q), using the shared CS kernel."""
     assert o.shape == (p + q, p + q)
     if p == 0 or q == 0:
         return o, np.eye(p + q), np.eye(p + q)
-    # Note that the argument p of cossin is the same as for this function, but q *is not the same*.
-    k1, f, k2 = cossin(o, p=p, q=p, swap_sign=True, separate=False)
-
-    if p > q:
-        k1[:, :p] = np.roll(k1[:, :p], q - p, axis=1)
-        k2[:p] = np.roll(k2[:p], q - p, axis=0)
-        f[:, :p] = np.roll(f[:, :p], q - p, axis=1)
-        f[:p] = np.roll(f[:p], q - p, axis=0)
-
-    # banish negative determinants
-    d1p, d1q = det(k1[:p, :p]), det(k1[p:, p:])
-    d2p, d2q = det(k2[:p, :p]), det(k2[p:, p:])
-    assert np.isclose(d1p * d1q * d2p * d2q, 1.0), f"{d1p * d1q * d2p * d2q}"
-    s = max(p, q)
-
-    k1[:, 0] *= d1p
-    k1[:, s] *= d1q
-    k2[0] *= d2p
-    k2[s] *= d2q
-
-    f[:, 0] *= d1p
-    f[:, s] *= d1q
-    f[0] *= d2p
-    f[s] *= d2q
-
+    k11, k12, theta, k21, k22 = bdi(o, p, q, is_horizontal=False, validate=validate)
+    k1, k2 = block_diag(k11, k12), block_diag(k21, k22)
     if validate:
-        r = min(p, q)
-        assert np.allclose(k1[:p, p:], 0.0) and np.allclose(k1[p:, :p], 0.0)
-        assert np.allclose(k1 @ k1.conj().T, np.eye(p + q))
-        assert np.allclose(k2[:p, p:], 0.0) and np.allclose(k2[p:, :p], 0.0)
-        assert np.allclose(k2 @ k2.conj().T, np.eye(p + q))
-        assert np.allclose(k1.imag, 0.0) and np.allclose(k2.imag, 0.0)
-
-        assert np.allclose(f[r:s, r:s], np.eye(s - r))
-        assert np.allclose(np.diag(np.diag(f[:r, :r])), f[:r, :r])
-        assert np.allclose(f[:r, :r], f[s:, s:])
-        assert np.allclose(np.diag(np.diag(f[:r, s:])), f[:r, s:])
-        assert np.allclose(f[:r, s:], -f[s:, :r])
-        assert np.allclose(f[r:s, :r], 0.0)
-        assert np.allclose(f[r:s, s:], 0.0)
-        assert np.allclose(f[:r, r:s], 0.0)
-        assert np.allclose(f[s:, r:s], 0.0)
-        assert np.allclose(k1 @ f @ k2, o), f"\n{k1}\n{f}\n{k2}\n{k1 @ f @ k2}\n{o}"
-        assert np.allclose(
-            [det(k1[:p, :p]), det(k1[p:, p:]), det(k2[:p, :p]), det(k2[p:, p:])], 1.0
-        )
-
-    return k1, f, k2
+        for k in (k1, k2):
+            assert np.allclose(k.imag, 0.0)
+            assert np.allclose(k @ k.T, np.eye(p + q))
+    return k1, _cartan_matrix(theta, p, q), k2
 
 
 def schur_sqrt(u):
     dim = u.shape[0]
     if dim % 2 == 1:
-        idx = np.where(np.isclose(np.diag(u), 1.0))[0][0]
+        # A small nonzero rotation can have cos(theta) rounded to one. Locate
+        # the fixed axis using its whole row and column, not the diagonal alone.
+        residual = u - np.eye(dim)
+        idx = np.argmin(norm(residual, axis=0) + norm(residual, axis=1))
         sliced_u = np.block(
             [[u[:idx, :idx], u[:idx, idx + 1 :]], [u[idx + 1 :, :idx], u[idx + 1 :, idx + 1 :]]]
         )
@@ -510,16 +430,12 @@ def schur_sqrt(u):
         )
         return sqrt
     sqrt = np.copy(u)
-    iY = np.array([[0, 1], [-1, 0]])
     for i in range(0, dim - 1, 2):
-        if np.isclose(u[i, i + 1], 0.0):
-            if u[i, i] < 0:
-                sqrt[i : i + 2, i : i + 2] = iY
-        else:
-            theta = np.arctan2(u[i, i + 1], u[i, i]) / 2
-            sqrt[i : i + 2, i : i + 2] = np.array(
-                [[np.cos(theta), np.sin(theta)], [-np.sin(theta), np.cos(theta)]]
-            )
+        # atan2 also covers exact +/-I and preserves nearby nonzero angles.
+        theta = np.arctan2(u[i, i + 1], u[i, i]) / 2
+        sqrt[i : i + 2, i : i + 2] = np.array(
+            [[np.cos(theta), np.sin(theta)], [-np.sin(theta), np.cos(theta)]]
+        )
 
     return sqrt
 
@@ -535,7 +451,6 @@ def diii_kak(o, validate=_validate_default):
     A_squared, u1 = sympl_real_eig_diii(Delta, J)
 
     mu_squared = A_squared[:n, :n]
-    print(np.round(A_squared, 3))
     assert np.allclose(mu_squared, A_squared[n:, n:].T)
     assert np.allclose(A_squared[n:, :n], 0.0) and np.allclose(A_squared[:n, n:], 0.0)
     mu = schur_sqrt(mu_squared)
@@ -546,8 +461,6 @@ def diii_kak(o, validate=_validate_default):
     if validate:
         assert np.allclose(u1.imag, 0.0)  # u1 is real
         assert np.allclose(u1 @ u1.conj().T, np.eye(dim), atol=1e-6)  # u1 is unitary
-        print(np.round(u1, 3))
-        print(np.round(J @ u1.conj() @ J.T, 3))
         assert np.allclose(J @ u1.conj() @ J.T, u1, atol=1e-6)  # u1 is symplectic
         assert np.allclose(A @ A, A_squared, atol=1e-6)
         assert np.allclose(u1 @ A_squared @ u1.conj().T, Delta, atol=1e-6)  # u1 is a Schur decomp.
@@ -622,87 +535,63 @@ def symplectify(x, J):
 
 
 def cii_kak(s, p, q, validate=_validate_default):
-    # assert p >= q
+    """Decompose a compact symplectic matrix as ``K1 @ F @ K2`` for CII(p, q).
+
+    The input has complex dimension ``2 * (p + q)`` and coordinate order
+    ``[p, q, p, q]``. Each K preserves the paired p and q sectors. F contains
+    two identical real cosine-sine blocks, with unused coordinates between
+    their paired axes. Unequal partitions, repeated angles, zero angles and
+    right angles are supported. If a partition is empty, F is identity.
+
+    A complex CSD supplies the joint sine/cosine subspaces. Symplectic bases
+    are chosen within those subspaces, and the same choice determines both
+    left blocks and the final right factor. ``validate`` checks input group
+    membership as well as reconstruction and the returned factor structures.
+    The input array is never modified.
+    """
+    if (
+        isinstance(p, (bool, np.bool_))
+        or isinstance(q, (bool, np.bool_))
+        or not isinstance(p, (int, np.integer))
+        or not isinstance(q, (int, np.integer))
+        or p < 0 or q < 0
+    ):
+        raise ValueError("CII partition sizes p and q must be nonnegative integers.")
+    p, q = int(p), int(q)
+    s = np.asarray(s)
     n = p + q
-    Z = lambda a, b: np.zeros((a, b))
-    I = np.eye
-    J = J_n(n)
-
-    # to be modded
-    chi = np.block(
-        [
-            [I(p), Z(p, p), Z(p, q), Z(p, q)],
-            [Z(q, p), Z(q, p), I(q), Z(q, q)],
-            [Z(p, p), I(p), Z(p, q), Z(p, q)],
-            [Z(q, p), Z(q, p), Z(q, q), I(q)],
-        ]
-    )
-
-    d = abs(p - q)
-    r = min(p, q)
-    # to be modded
-    if p >= q:
-        eta = np.block(
-            [
-                [I(r), Z(r, r), Z(r, d), Z(r, n)],
-                [Z(d, r), Z(d, r), I(d), Z(d, n)],
-                [Z(r, r), I(r), Z(r, d), Z(r, n)],
-                [Z(n, r), Z(n, r), Z(n, d), I(n)],
-            ]
-        )
-    else:
-        eta = np.block(
-            [
-                [I(n), Z(n, d), Z(n, r), Z(n, r)],
-                [Z(r, n), Z(r, d), I(r), Z(r, r)],
-                [Z(d, n), I(d), Z(d, r), Z(d, r)],
-                [Z(r, n), Z(r, d), Z(r, r), I(r)],
-            ]
-        )
-    # print(f"{chi.shape=}")
-    # print(f"{eta.shape=}")
-    # print(f"{s.shape=}")
-    # print(eta)
-    # print(chi)
-
-    sprime = eta.T @ chi.T @ s @ chi @ eta
-    u1, f0, u2 = aiii_kak(sprime, 2 * p, 2 * q, validate=False)
-    # print(f"{f0=}")
-    v1 = chi @ eta @ u1 @ eta.T @ chi.T
-    v2 = chi @ eta @ u2 @ eta.T @ chi.T
-    fbar = chi @ eta @ f0 @ eta.T @ chi.T
-    # print(fbar)
-    K_pq = np.diag(np.concatenate([np.ones(p), -np.ones(q), np.ones(p), -np.ones(q)]))
+    if s.shape != (2 * n, 2 * n):
+        raise ValueError("CII requires a square matrix of size 2 * (p + q).")
+    if s.dtype.kind not in "biufc" or not np.isfinite(s).all():
+        raise ValueError("CII requires finite numeric matrix entries.")
+    s = np.asarray(s, dtype=complex)
+    identity, J = np.eye(2 * n), J_n(n)
     if validate:
-        assert np.allclose(fbar.imag, 0.0)
-        assert np.allclose(fbar @ fbar.T, np.eye(2 * n))
-        # to be modded
-        assert np.allclose(fbar[:r, :r], fbar[r + d : n, r + d : n])
-        assert np.allclose(fbar[:r, r + d : n], -fbar[r + d : n, :r])
-        assert np.allclose(fbar[n : n + r, n : n + r], fbar[n + r + d : 2 * n, n + r + d : 2 * n])
-        assert np.allclose(fbar[n : n + r, n + r + d : 2 * n], -fbar[n + r + d : 2 * n, n : n + r])
-        assert np.allclose(K_pq @ v1 @ K_pq, v1)
-        assert np.allclose(K_pq @ v2 @ K_pq, v2)
-        assert np.allclose(K_pq @ fbar @ K_pq, fbar.T)
-        assert np.allclose(v1 @ fbar @ v2, s)
+        if not np.allclose(s.conj().T @ s, identity):
+            raise ValueError("CII requires a unitary input matrix.")
+        if not np.allclose(J @ s.conj() @ J.T, s):
+            raise ValueError("CII requires a symplectic input matrix.")
+    if p == 0 or q == 0:
+        return s.copy(), identity, identity.copy()
 
-    print(np.round(fbar, 2))
-    v1 = symplectify(v1, J)
-    v2 = symplectify(v2, J)
-    # for i in range(n):
-    # cand = J @ v1[:,n+i].conj()
-    # idx = np.where(cand)[0][0]
-    # phase = v1[idx, i] / cand[idx]
-    # print(np.allclose(v1[:, i], cand * phase))
-    # v1[:, i] = J @ v1[:,n+i].conj()
-    # v2[i] = v2[n+i].conj() @ J.T
-    fring = v1.conj().T @ s @ v2.conj().T
-    # assert np.allclose(v1.conj().T @ v1, np.eye(2*n))
-    print(v1.conj().T @ v1)
-    print(np.round(fring, 2))
-    # assert np.allclose(v2.conj().T @ v2, np.eye(2*n))
-
-    return v1, fring, v2
+    k1, cartan, k2 = compact_symplectic_csd(s, p, q)
+    if validate:
+        partition = np.r_[np.ones(p), -np.ones(q), np.ones(p), -np.ones(q)]
+        for factor in (k1, k2):
+            if not (
+                np.allclose(factor.conj().T @ factor, identity)
+                and np.allclose(J @ factor.conj() @ J.T, factor)
+                and np.allclose(partition[:, None] * factor * partition, factor)
+            ):
+                raise ValueError("CII factors do not have block symplectic structure.")
+        if not (
+            np.allclose(cartan.conj().T @ cartan, identity)
+            and np.allclose(J @ cartan.conj() @ J.T, cartan)
+            and np.allclose(partition[:, None] * cartan * partition, cartan.T)
+            and np.allclose(k1 @ cartan @ k2, s)
+        ):
+            raise ValueError("CII factors do not reconstruct the input with a Cartan factor.")
+    return k1, cartan, k2
 
 
 def a_kak(u, validate=_validate_default):

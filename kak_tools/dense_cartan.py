@@ -3,134 +3,193 @@
 import numpy as np
 from itertools import combinations
 from pennylane.pauli import PauliSentence
-from scipy.linalg import cossin, expm, logm, det
+from scipy.linalg import block_diag, cossin, expm, det
+
+
+def _cosine_resolved_svd(a, b, d):
+    """Keep weak sine directions separate from opposite-cosine eigenspaces.
+
+    Horizontal orthogonality implies ``a @ b == b @ d``. Consequently,
+    eigenspaces of the symmetric cosine blocks with disjoint spectra cannot
+    couple through ``b``. Resolving those spaces before its SVD avoids an
+    O(eps / small_sine) rotation between near-zero and near-pi planes.
+
+    Use gaps in the actual combined spectrum, not a fixed sign threshold:
+    nearly repeated cosine eigenvalues must remain together. Within a cosine
+    interval of width at most one, the sine SVD still resolves small angles
+    near the identity without relying on their almost identical cosines.
+    """
+    ca, left_cosine = np.linalg.eigh((a + a.T) / 2)
+    cd, right_cosine = np.linalg.eigh((d + d.T) / 2)
+    combined = np.sort(np.concatenate((ca, cd)))
+    if combined[-1] - combined[0] <= 1.0:
+        return np.linalg.svd(b, full_matrices=True)
+
+    def spectral_intervals(values, lower=-np.inf, upper=np.inf):
+        if values[-1] - values[0] <= 1.0:
+            yield lower, upper
+            return
+        split = int(np.argmax(np.diff(values))) + 1
+        boundary = (values[split - 1] + values[split]) / 2
+        yield from spectral_intervals(values[:split], lower, boundary)
+        yield from spectral_intervals(values[split:], boundary, upper)
+
+    paired, left_free, right_free = [], [], []
+    for lower, upper in spectral_intervals(combined):
+        left_space = left_cosine[:, (ca >= lower) & (ca < upper)]
+        right_space = right_cosine[:, (cd >= lower) & (cd < upper)]
+        local_left, local_sine, local_right_t = np.linalg.svd(
+            left_space.T @ b @ right_space, full_matrices=True
+        )
+        local_left = left_space @ local_left
+        local_right = right_space @ local_right_t.T
+        paired.extend(
+            (value, local_left[:, i], local_right[:, i])
+            for i, value in enumerate(local_sine)
+        )
+        left_free.extend(local_left[:, i] for i in range(len(local_sine), local_left.shape[1]))
+        right_free.extend(local_right[:, i] for i in range(len(local_sine), local_right.shape[1]))
+
+    paired.sort(key=lambda item: item[0], reverse=True)
+    left = np.column_stack([item[1] for item in paired] + left_free)
+    right = np.column_stack([item[2] for item in paired] + right_free)
+    return left, np.asarray([item[0] for item in paired]), right.T
+
+
+def _horizontal_bdi(u, p, q):
+    """Diagonalize a horizontal group element, including repeated CS angles.
+
+    The off-diagonal block determines the sine planes. Inside repeated singular
+    subspaces its symmetric diagonal blocks determine the cosine signs. The sine
+    kernel is resolved separately, including pi rotations and fixed directions.
+    Starting with the sine block avoids ill-conditioned cosine eigenvectors near
+    the identity, where distinct angles have nearly indistinguishable cosines.
+    """
+    u = np.asarray(u)
+    n = p + q
+    if u.shape != (n, n) or min(p, q) < 1:
+        raise ValueError("BDI requires positive block sizes and a matrix of size p + q.")
+    if np.iscomplexobj(u):
+        if not np.allclose(u.imag, 0.0, atol=1e-12):
+            raise ValueError("BDI requires a real special orthogonal matrix.")
+        u = u.real
+    # Verify the horizontal symmetry independently of the optional diagnostics:
+    # setting the second factor to the first factor's transpose is valid only here.
+    a, b, d = u[:p, :p], u[:p, p:], u[p:, p:]
+    orthogonality_error = u.T @ u - np.eye(n)
+    if not (
+        np.allclose(orthogonality_error, 0.0, atol=1e-10, rtol=0.0)
+        and np.allclose(a, a.T, atol=1e-10, rtol=1e-10)
+        and np.allclose(d, d.T, atol=1e-10, rtol=1e-10)
+        and np.allclose(u[p:, :p], -b.T, atol=1e-10, rtol=1e-10)
+    ):
+        raise ValueError(
+            "u is not the exponential of a horizontal BDI element; "
+            "pass is_horizontal=False for a general group element."
+        )
+
+    left, sine, right_t = _cosine_resolved_svd(a, b, d)
+    right = right_t.T
+    spectral_tol = 64 * np.finfo(float).eps * n
+    nonzero = int(np.count_nonzero(sine > spectral_tol))
+    left_paired, right_paired, angles = [], [], []
+    start = 0
+    while start < nonzero:
+        end = start + 1
+        while end < nonzero and sine[start] - sine[end] <= spectral_tol:
+            end += 1
+        lg, rg = left[:, start:end], right[:, start:end]
+        cosine_block = (lg.T @ a @ lg + rg.T @ d @ rg) / 2
+        cosine, rotation = np.linalg.eigh((cosine_block + cosine_block.T) / 2)
+        lg, rg = lg @ rotation, rg @ rotation
+        sg = np.diag(rotation.T @ np.diag(sine[start:end]) @ rotation)
+        left_paired.extend(lg[:, i] for i in range(end - start))
+        right_paired.extend(rg[:, i] for i in range(end - start))
+        angles.extend(np.arctan2(sg, np.clip(cosine, -1.0, 1.0)))
+        start = end
+
+    # At zero sine, independently choose the -1 and +1 cosine eigenspaces.
+    # The -1 multiplicities must agree: every pi rotation uses one axis per block.
+    lk, rk = left[:, nonzero:], right[:, nonzero:]
+    ak, dk = lk.T @ a @ lk, rk.T @ d @ rk
+    ca, la = np.linalg.eigh((ak + ak.T) / 2)
+    cd, rd = np.linalg.eigh((dk + dk.T) / 2)
+    lk, rk = lk @ la, rk @ rd
+    negative_a, negative_d = int(np.count_nonzero(ca < 0)), int(np.count_nonzero(cd < 0))
+    if negative_a != negative_d:
+        raise ValueError("Horizontal BDI blocks have incompatible cosine eigenspaces.")
+    paired = min(len(ca), len(cd))
+    left_paired.extend(lk[:, i] for i in range(paired))
+    right_paired.extend(rk[:, i] for i in range(paired))
+    angles.extend([np.pi] * negative_a + [0.0] * (paired - negative_a))
+    left_free = [lk[:, i] for i in range(paired, len(ca))]
+    right_free = [rk[:, i] for i in range(paired, len(cd))]
+
+    r = min(p, q)
+    if len(angles) != r:
+        raise ValueError("Horizontal BDI blocks do not admit the requested paired planes.")
+    k11 = np.column_stack(left_paired + left_free)
+    k12 = np.column_stack(right_free + right_paired)
+    theta = np.asarray(angles)
+    # Move each block into SO without changing the represented group element.
+    d11 = -1.0 if det(k11) < 0 else 1.0
+    d12 = -1.0 if det(k12) < 0 else 1.0
+    k11[:, 0] *= d11
+    k12[:, q - r] *= d12
+    theta[0] *= d11 * d12
+
+    k1 = block_diag(k11, k12)
+    cartan = _cartan_matrix(theta, p, q)
+    if not np.allclose(k1 @ cartan @ k1.T, u, atol=1e-10, rtol=1e-10):
+        raise ValueError("The horizontal BDI factors do not reconstruct the input matrix.")
+    return k11, k12, theta, k11.T.copy(), k12.T.copy()
+
+
+def _cartan_matrix(theta, p, q):
+    """Canonical CS rotation with free axes between the paired axes."""
+    matrix = np.eye(p + q)
+    first = np.arange(min(p, q))
+    second = first + max(p, q)
+    matrix[first, first] = matrix[second, second] = np.cos(theta)
+    matrix[first, second], matrix[second, first] = np.sin(theta), -np.sin(theta)
+    return matrix
 
 
 def bdi(u, p, q, is_horizontal=True, validate=True, **kwargs):
-    """BDI(p, q) Cartan decomposition of special orthogonal u
+    """Return ``k11, k12, theta, k21, k22`` for BDI(p, q).
 
-    Args:
-        u (np.ndarray): The special orthogonal matrix to decompose. It must be square-shaped with
-            size p+q.
-        p (int): First subspace size for SO(p) x SO(q), the vertical subspace
-        q (int): Second subspace size for SO(p) x SO(q), the vertical subspace
-        is_horizontal (bool): Whether or not ``u`` is the exponential of a horizontal element
-
-    Returns:
-        np.ndarray: The first K from the KAK decomposition
-        np.ndarray: The exponentiated Cartan subalgebra element A from the KAK decomposition
-        np.ndarray: The second K from the KAK decomposition
-
-
-    The input ``u`` and all three output matrices are group elements, not algebra elements.
+    The K factors have diagonal blocks in SO(p) and SO(q). ``theta`` gives
+    the CS rotations between axes i and max(p, q) + i. Horizontal input
+    requires K2 = K1.T; otherwise use the general cosine-sine decomposition.
+    ``compute_u=False`` returns only the CS angles.
     """
     if validate:
         assert u.shape == (p + q, p + q)
-    # Note that the argument p of cossin is the same as for this function, but q *is not the same*.
     if kwargs.get("compute_u", True) is False:
         return cossin(u, p=p, q=p, swap_sign=True, separate=True, **kwargs)[1]
+    if is_horizontal:
+        return _horizontal_bdi(u, p, q)
     (k11, k12), theta, (k21, k22) = cossin(u, p=p, q=p, swap_sign=True, separate=True)
-    if validate:
-        r = min(p, q)
-        s = p - r
-        t = q - r
-        k1 = np.block([[k11, np.zeros((p, q))], [np.zeros((q, p)), k12]])
-        a = np.block(
-            [
-                [np.eye(s), np.zeros((s, r)), np.zeros((s, t)), np.zeros((s, r))],
-                [np.zeros((r, s)), np.diag(np.cos(theta)), np.zeros((r, t)), np.diag(np.sin(theta))],
-                [np.zeros((t, s)), np.zeros((t, r)), np.eye(t), np.zeros((t, r))],
-                [np.zeros((r, s)), np.diag(-np.sin(theta)), np.zeros((r, t)), np.diag(np.cos(theta))],
-            ]
-        )
-        k2 = np.block([[k21, np.zeros((p, q))], [np.zeros((q, p)), k22]])
-        assert np.allclose(k1 @ a @ k2, u), f"\n{k1}\n{a}\n{k2}\n{k1 @ a @ k2}\n{u}"
-
     if p > q:
         k11 = np.roll(k11, q - p, axis=1)
         k21 = np.roll(k21, q - p, axis=0)
 
-    if validate:
-        f = abs(p-q)
-        k1 = np.block([[k11, np.zeros((p, q))], [np.zeros((q, p)), k12]])
-        a = np.block(
-            [
-                [np.diag(np.cos(theta)), np.zeros((r, f)), np.diag(np.sin(theta))],
-                [np.zeros((f, r)), np.eye(f), np.zeros((f, r))],
-                [np.diag(-np.sin(theta)), np.zeros((r, f)), np.diag(np.cos(theta))],
-            ]
-        )
-        k2 = np.block([[k21, np.zeros((p, q))], [np.zeros((q, p)), k22]])
-        assert np.allclose(k1 @ a @ k2, u), f"\n{k1}\n{a}\n{k2}\n{k1 @ a @ k2}\n{u}"
-
-    if is_horizontal:
-        # We want k1 = k2.T, but scipy is unburdened by such concerns: for a horizontal
-        # u the CS decomposition is only determined up to a diagonal sign gauge
-        # D = diag(+-1), under which (k1, a, k2) -> (k1, a diag(D, D), diag(D, D) k2).
-        # That leaves k1 @ a @ k2 invariant and shifts theta_i by pi wherever d_i = -1,
-        # so we can always repair the mismatch instead of giving up on it.
-        #
-        # For p != q the f = |p - q| directions that `a` leaves fixed carry a further
-        # O(f) gauge, which commutes with `a` and so is not fixed by this repair. At
-        # f <= 1 that group is O(1) = {+-1}, i.e. discrete and already covered by the
-        # sign flip below -- which is the case of an odd irrep size, where the top-level
-        # split is BDI(p, p+1). Beyond that the gauge is continuous and we still refuse.
-        flips = []
-        for i in range(p):
-            if np.allclose(k11[:, i], k21[i]):
-                continue
-            if abs(p - q) <= 1 and np.allclose(k11[:, i], -k21[i]):
-                flips.append(i)
-            else:
-                raise ValueError(
-                    f"Column {i} of k11 matches neither +k21[{i}] nor -k21[{i}], so u does "
-                    "not appear to be the exponential of a horizontal element. Pass "
-                    "is_horizontal=False if that is expected."
-                )
-        for i in flips:
-            k21[i] *= -1
-            k22[i] *= -1
-            theta[i] += np.pi
-
-    # banish negative determinants
-    d11 = det(k11)
-    d12 = det(k12)
+    # Transfer block reflections into the first signed Cartan angle.
+    d11, d12, d21, d22 = (det(k) for k in (k11, k12, k21, k22))
+    assert np.isclose(d11 * d12 * d21 * d22, 1.0)
     k11[:, 0] *= d11
-    k12[:, q-min(p,q)] *= d12
-    if is_horizontal:
-        k21[0] *= d11
-        k22[q-min(p,q)] *= d12
-        theta[0] *= d11 * d12
-    else:
-        d21 = det(k21)
-        d22 = det(k22)
-        assert np.isclose(d11 * d12 * d21 * d22, 1.0)
-        k21[0] *= d21
-        k22[q-min(p,q)] *= d22
-        theta[0] *= d11 * d12
-        if d11 * d21 < 0:
-            theta[0] += np.pi
+    k12[:, q - min(p, q)] *= d12
+    k21[0] *= d21
+    k22[q - min(p, q)] *= d22
+    theta[0] *= d11 * d12
+    if d11 * d21 < 0:
+        theta[0] += np.pi
 
     if validate:
-        f = abs(p - q)
-        r = min(p, q)
-        k1 = np.block([[k11, np.zeros((p, q))], [np.zeros((q, p)), k12]])
-        a = np.block(
-            [
-                [np.diag(np.cos(theta)), np.zeros((r, f)), np.diag(np.sin(theta))],
-                [np.zeros((f, r)), np.eye(f), np.zeros((f, r))],
-                [np.diag(-np.sin(theta)), np.zeros((r, f)), np.diag(np.cos(theta))],
-            ]
-        )
-        k2 = np.block([[k21, np.zeros((p, q))], [np.zeros((q, p)), k22]])
-        if is_horizontal:
-            assert np.allclose(k1, k2.T)
-        assert np.allclose(k1 @ a @ k2, u), f"\n{k1}\n{a}\n{k2}\n{k1 @ a @ k2}\n{u}"
-
-        assert np.allclose([det(k1), det(k1[:p, :p]), det(k1[p:, p:])], 1.0)
-        assert np.allclose([det(k2), det(k2[:p, :p]), det(k2[p:, p:])], 1.0)
-        assert np.isclose(det(a), 1.0)
-
+        k1, k2 = block_diag(k11, k12), block_diag(k21, k22)
+        cartan = _cartan_matrix(theta, p, q)
+        assert np.allclose(k1 @ cartan @ k2, u)
+        assert np.allclose([det(k) for k in (k11, k12, k21, k22, cartan)], 1.0)
     return k11, k12, theta, k21, k22
 
 
@@ -162,7 +221,7 @@ def recursive_bdi(U, n, num_iter=None, first_is_horizontal=True, validate=True, 
         decomposed_something = False
         new_ops = []
 
-        for k, (op, start, end, _type) in enumerate(current_ops):
+        for op, start, end, _type in current_ops:
             _n = end - start
             if _n <= 1:
                 continue
@@ -175,8 +234,6 @@ def recursive_bdi(U, n, num_iter=None, first_is_horizontal=True, validate=True, 
                 continue
             _p = _n // 2
             _q = _n - _p
-            # locs = [(0, _p), (_p, _n)]# if _type == "k1" else [(0, _p), (_p, _n)]
-            # for s, e in locs:
             k11, k12, theta, k21, k22 = bdi(op, _p, _q, is_horizontal=False, validate=validate)
             new_ops.extend(
                 [
@@ -287,30 +344,13 @@ def group_matrix_to_reducible(matrix, start, mapping, signs, tol=1e-10):
 
 
 def group_matrix_to_reducible_str(matrix, start, mapping):
-    """Map a (SO(n)) group element composed of commuting Given's rotations
-    into commuting Pauli rotations on the reducible representation given by mapping & signs."""
-    # op = {}
-    # seen_ids = set()
-    # print(matrix.shape)
-    # print(np.where(matrix))
+    """Convert an SO(2) block using the legacy string mapping and angle branch."""
     assert matrix.shape == (2, 2)
-    # for i, j in zip(*np.where(matrix)):
-    # if i < j:
-    # assert i not in seen_ids and j not in seen_ids, f"{matrix}"
-    m_ii = matrix[0, 0]
-    # m_jj = matrix[j, j]
-    # assert np.isclose((sign := np.sign(m_ii)), np.sign(m_jj)) or np.allclose([m_ii, m_jj], 0.), f"{m_ii}, {m_jj}"
     angle = np.arcsin(matrix[0, 1])
-    # assert angle.dtype == np.float64
-    if np.sign(m_ii) < 0:
+    if matrix[0, 0] < 0:
         angle = np.pi - angle
-    pw, sign = mapping[(start + 0, start + 1)]
-    # op[pw] = angle / 2 / sign
-    # seen_ids |= {0, 1}
-
-    # print(op)
-    return {pw: angle / 2 / sign}
-    # return op
+    word, sign = mapping[(start, start + 1)]
+    return {word: angle / 2 / sign}
 
 
 def map_recursive_decomp_to_reducible(
@@ -324,21 +364,19 @@ def map_recursive_decomp_to_reducible(
     to this function.
     """
 
-    decomp = recursive_decomp
     pauli_decomp = []
     if validate:
         from .map_to_irrep import E
 
         inv_mapping = {val: key for key, val in mapping.items()}
     n = max([k[1] for k in mapping]) + 1
-    for mat, s, e, t in decomp:
+    for mat, s, e, t in recursive_decomp:
         if t.startswith("a"):
             ps = angles_to_reducible(mat, s, e, mapping, signs)
         else:
             ps = group_matrix_to_reducible(mat, s, mapping, signs)
-        if t == "a0":
-            if time is not None:
-                ps = ps / time
+        if t == "a0" and time is not None:
+            ps = ps / time
         if tol is not None:
             ps.simplify(tol=tol)
         pauli_decomp.extend(((pw, coeff, t) for pw, coeff in ps.items()))
@@ -348,9 +386,8 @@ def map_recursive_decomp_to_reducible(
             assert all(pw1.commutes_with(pw2) for pw1, pw2 in combinations(ps.keys(), r=2))
             if not t.startswith("a"):
                 assert len(ps) == 2
-            if t == "a0":
-                if time is not None:
-                    ps = ps * time
+            if t == "a0" and time is not None:
+                ps = ps * time
             rec_mat = np.eye(n)
             for pw, coeff in ps.items():
                 i, j = inv_mapping[pw]
@@ -367,18 +404,8 @@ def map_recursive_decomp_to_reducible(
 
 def round_angles_to_irreducible_mat(theta, start, end, n, tol):
     p = (end - start) // 2
-    q = end - start - p
-    f = abs(p - q)
-    r = min(p, q)
-    theta = np.array([th if np.abs(np.sin(th)) > tol else 0 for th in theta])
-    a = np.block(
-        [
-            [np.diag(np.cos(theta)), np.zeros((r, f)), np.diag(np.sin(theta))],
-            [np.zeros((f, r)), np.eye(f), np.zeros((f, r))],
-            [np.diag(-np.sin(theta)), np.zeros((r, f)), np.diag(np.cos(theta))],
-        ]
-    )
-    return embed(a, start, end, n)
+    theta = np.where(np.abs(np.sin(theta)) > tol, theta, 0)
+    return embed(_cartan_matrix(theta, p, end - start - p), start, end, n)
 
 
 def round_mat_to_irreducible_mat(mat, start, end, n, tol):
@@ -387,22 +414,13 @@ def round_mat_to_irreducible_mat(mat, start, end, n, tol):
 
 
 def round_mult_recursive_decomp_str(recursive_decomp, time, n_so, tol=1e-8):
-
     out = np.eye(n_so)
-    for mat, s, e, t in recursive_decomp:
-        if t.startswith("a"):
-            if t == "a0" and time is not None:
-                mat = mat / time
-            mat = round_angles_to_irreducible_mat(mat, s, e, n_so, tol)
-        else:
-            mat = round_mat_to_irreducible_mat(mat, s, e, n_so, tol)
-
-        out @= mat
+    for matrix in _iter_recursive_matrices(recursive_decomp, time, n_so, tol):
+        out @= matrix
     return out
 
 
-def map_recursive_decomp_to_matrices(recursive_decomp, time, n_so, tol=1e-8):
-    matrices = []
+def _iter_recursive_matrices(recursive_decomp, time, n_so, tol):
     for mat, s, e, t in recursive_decomp:
         if t.startswith("a"):
             if t == "a0" and time is not None:
@@ -411,9 +429,11 @@ def map_recursive_decomp_to_matrices(recursive_decomp, time, n_so, tol=1e-8):
         else:
             mat = round_mat_to_irreducible_mat(mat, s, e, n_so, tol)
 
-        matrices.append(mat)
+        yield mat
 
-    return matrices
+
+def map_recursive_decomp_to_matrices(recursive_decomp, time, n_so, tol=1e-8):
+    return list(_iter_recursive_matrices(recursive_decomp, time, n_so, tol))
 
 
 def map_recursive_decomp_to_reducible_str(recursive_decomp, mapping, time=None, tol=1e-8):
@@ -430,9 +450,8 @@ def map_recursive_decomp_to_reducible_str(recursive_decomp, mapping, time=None, 
             ps = angles_to_reducible_str(mat, s, e, mapping)
         else:
             ps = group_matrix_to_reducible_str(mat, s, mapping)
-        if t == "a0":
-            if time is not None:
-                ps = {key: val / time for key, val in ps.items()}
+        if t == "a0" and time is not None:
+            ps = {key: val / time for key, val in ps.items()}
         if tol is not None:
             ps = {key: val for key, val in ps.items() if np.abs(val) >= tol}
         pauli_decomp.extend(((pw, coeff, t) for pw, coeff in ps.items()))

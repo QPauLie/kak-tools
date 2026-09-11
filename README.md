@@ -1,141 +1,117 @@
 # KAK tools
-Tools for automatic, deterministic KAK decompositions of Lie algebras.
 
-The package can be pip-installed, for example via `pip install -e .` while in the main directory.
+Deterministic Cartan decompositions for quantum compilation. The package contains
+matrix-level routines for the classical Cartan types and a Pauli-level BDI workflow
+configured by [PauLie](https://github.com/QPauLie/PauLie).
 
-This repository contains code that is part of our publication on KAK decompositions for compilation.
-It is structured as follows:
-- `kak_tools/`: Source code files containing all tools
-- `notebooks/`: Notebooks/scripts containing examples, applications and visualizations
-- `tests/`: Minimal tests for the tools in `kak_tools/`
+## Installation and tests
+
+Requires Python >= 3.12 and PauLie >= 0.2.2:
+
+```sh
+pip install -e .
+```
+
+Use a virtual environment for the reproducible CPU test dependencies:
+
+```sh
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements-test.txt
+.venv/bin/python -m pytest -q
+```
+
+`constraints-test.txt` records the tested versions, including PennyLane 0.45.1 and
+JAX/JAXLIB 0.7.1. `requirements.txt` additionally includes notebook/development tools.
+The tests use representative partitions and fixed regressions rather than broad
+Cartesian sweeps over dimensions, seeds and validation flags.
 
 ## PauLie bridge
 
-A KAK decomposition needs to know *which* algebra it is decomposing: the irrep size `n`
-and a Cartan involution. On its own this package either takes that on faith — `n_so = 2 * n`
-is hard-coded in `kak_tools/full_workflows.py` — or guesses it from the dimension via
-`identify_algebra`, which is deliberately non-unique. A 21-dimensional simple DLA, for
-instance, is consistent with both `so(7)` and `sp(3)`, and those need different involutions.
-
-[PauLie](https://github.com/QPauLie/PauLie) settles the question. It classifies the dynamical
-Lie algebra of a set of Pauli-string generators exactly and in polynomial time, returning a
-decomposition such as `so(8)` or `u(1)+2*su(2)`. `kak_tools.paulie_bridge` wires the two
-together, so the decomposition is configured from the classification instead of by hand:
+PauLie classifies the generator algebra; the bridge chooses its orthogonal
+presentation and constructs a verified Pauli-word mapping. Dimension alone would
+be ambiguous: both so(7) and sp(3) have dimension 21.
 
 ```python
-from kak_tools import kak_decomposition, classify_dla
+from kak_tools import classify_dla, kak_decomposition
 
-n = 4
-generators = (
-    [f"{'I' * w}XX{'I' * (n - w - 2)}" for w in range(n - 1)]
-    + [f"{'I' * w}YY{'I' * (n - w - 2)}" for w in range(n - 1)]
-    + [f"{'I' * w}Z{'I' * (n - w - 1)}" for w in range(n)]
-)
+# Two-qubit transverse-field XY model.
+generators = ["XX", "YY", "ZI", "IZ"]
+info = classify_dla(generators)
+result = kak_decomposition(generators, [1.0, 0.7, -0.3, 0.5], time=0.83)
 
-classify_dla(generators).algebra      # 'so(8)' -- one answer, not a candidate list
-
-result = kak_decomposition(generators, coefficients, time=0.83)
-result.irrep_size                     # 8, taken from the classification
-result.pauli_rotations                # [(PauliWord, angle, 'k1' | 'k2' | 'a0' | 'a'), ...]
-result.cartan_angles                  # the only t-dependent rotations
-result.reconstruction_error           # ~1e-14; the rotations are checked against exp(t H)
+print(info.algebra, result.irrep_size, result.reconstruction_error)
+result.pauli_rotations    # (PauliWord, coefficient, kind) triples
+result.cartan_angles      # (PauliWord, rate) pairs, independent of time
+result.reconstruct(4.2)   # reuse the compilation at another time
 ```
 
-`notebooks/paulie_bridge_example.py` runs the whole thing end to end, on several models.
+See `notebooks/paulie_bridge_example.py` for more models.
 
-### What the bridge provides
+| API | Purpose |
+| --- | --- |
+| `classify_dla` | Wrap PauLie's classification in `DLAInfo` |
+| `DLAInfo.algebra`, `.dim`, `.components` | Algebra name, dimension and summands |
+| `DLAInfo.is_algebra`, `.orthogonal_size`, `.is_simple`, `.simple_component` | Delegate algebra properties to PauLie |
+| `DLAInfo.matrix_basis`, `.orthogonal_basis` | Basis in the classified presentation or its so(m) presentation |
+| `dla_pauli_basis` | Complete native Pauli closure, checked against the classified dimension |
+| `map_dla_to_irrep` | Map the Pauli basis to signed rotation planes |
+| `labelled_matrix_basis` | Label PauLie's orthogonal matrices with the verified Pauli words |
+| `kak_decomposition` | Compile a horizontal Hamiltonian into reusable Pauli rotations |
+| `pauli_string_to_word`, `pauli_word_to_string` | Convert between PauLie strings and PennyLane words |
 
-| Function | Purpose | Delegates to |
-| --- | --- | --- |
-| `classify_dla` | Converts kak-tools-flavoured generators to a PauLie collection and returns its classification, wrapped as a `DLAInfo` | `PauliStringCollection.get_class` |
-| `DLAInfo.algebra` / `.dim` / `.components` | Name, dimension and summands | `get_algebra`, `get_dla_dim`, `get_subalgebras` |
-| `DLAInfo.matrix_basis` / `.orthogonal_basis` | Matrix basis of the algebra, as named and as `so(m)` | `get_algebra_basis`, `get_so_basis` |
-| `DLAInfo.is_algebra` | Isomorphism tests, including the low-rank coincidences | `Classification.is_algebra` |
-| `DLAInfo.orthogonal_size` / `.is_simple` / `.simple_component` | Which `so(m)` the DLA is, and whether it is simple | `get_orthogonal_size`, `is_simple`, `get_simple_component` |
-| `dla_pauli_basis` | Pauli-word basis of the DLA, with the dimension known in advance | `lie_closure_pauli_words(..., full_size=)` |
-| `labelled_matrix_basis` | PauLie's `so(m)` basis matrices, labelled with the Pauli words they correspond to | `get_so_basis` + `map_simple_to_irrep` |
-| `map_dla_to_irrep` | `map_simple_to_irrep`, with `n` supplied by the classification | `map_simple_to_irrep` |
-| `kak_decomposition` | The full workflow: generators in, verified Pauli rotations out | `recursive_bdi` etc. |
-| `pauli_string_to_word` / `pauli_word_to_string` | PauLie `PauliString` to/from PennyLane `PauliWord` | — |
+`matrix_basis` follows the classified presentation, so 2*so(3) uses 6×6 matrices;
+`orthogonal_basis` follows its so(4) presentation and uses 4×4 matrices.
+`simple_component` propagates PauLie's `ClassificationException` for nonsimple algebras.
 
-Nothing about the algebra is recomputed here: `DLAInfo` holds PauLie's `Classification`
-object and forwards to it, and `DLAComponent` is parsed straight out of PauLie's own
-naming. The bridge only supplies the one thing PauLie has no reason to know, namely which
-irrep size and involution `kak_tools` should be configured with.
+### Inputs and conventions
 
-`orthogonal_size`, `is_simple` and `simple_component` used to be derived here, from
-`get_simple_dim` plus a simplicity check over the parsed components. Which `so(m)` an
-algebra is isomorphic to, and whether it is simple, are properties of the algebra rather
-than of this package's configuration, so they now live on PauLie's `Classification` and
-these are one-line forwards. `simple_component` accordingly raises PauLie's
-`ClassificationException` rather than a local `ValueError`.
+Generators can be strings, PauLie strings/collections, PennyLane `PauliWord`s or
+real multiples of single Pauli operators, including iterators. Operator sums are
+rejected because splitting them would change the independently generated algebra.
+The separate `coefficients` argument has one entry per original term; it multiplies
+intrinsic weights before duplicate Hamiltonian terms are combined.
 
-The two bases are deliberately distinct. `matrix_basis` is `get_algebra_basis()` verbatim,
-so it follows the classified presentation — a DLA named `2*so(3)` is based in `6x6`.
-`orthogonal_basis` is the `so(m)` presentation that `kak_tools` decomposes in, so the same
-algebra is based in `4x4`. For a DLA PauLie already names `so(m)` the two coincide.
+Trailing identities and explicit Identity wires preserve register width. Native
+bit inputs are normalized to consistent endianness. Coefficients and times must be
+finite real scalars; numeric complex scalars with zero imaginary part are accepted.
 
-Generators may be given as Pauli strings (`"XXII"`), PennyLane `PauliWord`s, PennyLane
-operators (`qml.X(0) @ qml.X(1)`), PauLie `PauliString`s or a PauLie `PauliStringCollection`.
+The physical convention is **exp(+it ΣcP)**. A PennyLane `PauliRot` takes
+`-2 * coefficient`, additionally multiplied by time for central `a0` rates.
+`matrix_factors` stores `(matrix, start, end, kind)` group factors at the original
+time; these differ from `recursive_bdi`'s arrays of CS angles.
 
-### Installation
+### Algorithm and scope
 
-```sh
-pip install -e .        # pulls in paulie, which requires Python >= 3.12
-```
+- The Pauli workflow requires a compatible so(m) basis and horizontal generators
+  for BDI(p,q). Even and odd m work. `invol_kwargs={"p": p}` or `{"q": q}` infers
+  the complement; supplying both requires positive sizes with p+q=m. The default
+  partition is balanced; alternatives are not searched automatically.
+- Abstract isomorphism with so(m) does not guarantee a signed bijection between
+  individual Pauli words and rotation planes. Independent su(2) factors on separate
+  qubits may require compilation component by component.
+- Zeros in the separate `coefficients` argument retain the generator algebra.
+  Intrinsically zero PennyLane operators have no Pauli support and are omitted.
+- The bridge computes the full native closure before checking its dimension.
+  Supplied `DLAInfo` is checked against a fresh classification because PauLie's
+  classification objects are mutable. Incompatible metadata raises, or warns and
+  uses the actual algebra with `dla_pauli_basis(..., strict=False)`.
+- A complete, distinct Pauli basis and its star commutators certify the signed
+  so(m) mapping. A signed SVD then factors the horizontal Hamiltonian as H=KAKᵀ.
+  The right gate list is the exact inverse of the left, preserving the physical
+  lift. Central rates remain unwrapped for zero, negative and later times.
+- No rotations are discarded by default. Explicit `tol` approximates by dropping
+  small vertical rotations; central rates are retained. `validate=True` checks
+  reconstruction at the supplied time. Floating-point errors can accumulate at
+  very large times.
+- `dense_cartan.bdi` handles horizontal or general group matrices, returning block
+  factors and CS angles. `numerical_decompositions.bdi_kak` returns full matrices
+  using the same general BDI kernel.
+- Other classical types are available through `numerical_decompositions`.
+  `cii_kak` uses coupled symplectic bases without angle clustering, including
+  unequal/empty partitions and repeated or endpoint angles. Factor structure is
+  checked in double precision; arbitrary noisy inputs and relative precision at
+  arbitrarily small angles are not guaranteed.
 
-### Scope and known limitations
-
-- The Pauli-word pipeline covers `so(m)` with a `BDI` involution, which is what
-  `map_simple_to_irrep` implements. The low-rank coincidences are recognised, so a DLA
-  PauLie names `2*so(3)` is still decomposed as `so(4)`.
-- Odd `m` is supported. The top-level split is then `BDI(p, p+1)`, so the `f = |p - q| = 1`
-  direction that the Cartan factor leaves fixed carries an extra `O(f)` gauge on top of the
-  usual diagonal sign gauge. At `f <= 1` that group is `O(1) = {+-1}`, i.e. discrete, and
-  `dense_cartan.bdi` repairs it like any other sign; it used to insist on `p == q` and
-  raise otherwise, which rejected almost every Hamiltonian with odd `m`. This is not a
-  corner case: in PauLie's two-local convention the transverse-field Ising family is
-  `so(2n - 1)`. For `f >= 2` the gauge is genuinely continuous and is still refused.
-- Algebras that are not `so(m)` are refused with a message naming what PauLie found. The
-  matrix-level routines in `numerical_decompositions` cover the other classical types, and
-  can be called directly.
-- `kak_decomposition` validates its own output by default: it recomposes `exp(t H)` from the
-  Pauli rotations and raises if the result does not match.
-
-### Fixes made along the way
-
-Wiring PauLie in exposed three bugs in the decomposition path, since PauLie hands the
-pipeline algebras it was never run on by hand. All three are fixed here:
-
-1. `dense_cartan.angles_to_reducible` assigned the cosine-sine angles of a block of width
-   `w` to the Pauli words indexed `(i, i + w // 2)`. The rotation actually couples `i` with
-   `i + (w - w // 2)`. The two agree for even `w`, so this only surfaced once `so(6)`,
-   `so(10)`, `so(12)`, ... were being decomposed -- where it silently produced a wrong
-   decomposition rather than an error.
-2. `dense_cartan.bdi` raised a bare `ValueError` whenever scipy's `cossin` returned a
-   decomposition with `k11[:, i] == -k21[i]`, which is a sign gauge that leaves
-   `k1 @ a @ k2` invariant and can simply be repaired (flip the row and shift the angle by
-   `pi`). It is now repaired. Whether it triggered was coefficient-dependent -- for `so(4)`
-   it was tripping on roughly three quarters of random Hamiltonians. The repair was at
-   first allowed only for `p == q`, on the grounds that `p != q` brings a continuous
-   `O(|p - q|)` gauge; but odd `m` gives `|p - q| = 1`, where that group is `{+-1}` and
-   therefore discrete. Widening the condition to `|p - q| <= 1` took the Ising family from
-   0/25 successful coefficient draws to 480/480 across `so(7)` through `so(13)`, at a worst
-   reconstruction error of 3.1e-13.
-3. `dense_cartan.group_matrix_to_reducible` read a rotation angle off `arcsin` of the
-   off-diagonal entry, so a `2x2` block equal to `diag(-1, -1)` -- a rotation by exactly
-   `pi`, with no off-diagonal entry to be found -- was silently dropped. Angles are now read
-   with `arctan2` and leftover `-1` pairs are emitted explicitly. This is what a
-   translation-invariant Hamiltonian with uniform coefficients runs into.
-
-`lie_closure_pauli_words` also picked up two fixes while the bridge was leaning on it: it
-referenced `warnings` without importing it, so hitting `max_iterations` raised `NameError`
-instead of warning; and it tested `com not in dla` against a *list*, which is `O(dim)` per
-commutator and makes the closure `O(dim^3)`. It now keeps a set alongside, and honours
-`full_size` as soon as the algebra is complete rather than at the end of the sweep.
-
-Smaller ones: `map_to_irrep.irrep_dot` did not accept the `(mapping, signs)` pair that
-`map_simple_to_irrep` returns, so `full_workflows.complete_workflow_tfXY` raised a
-`TypeError` on every call; the `coefficients` argument of the `full_workflows` entry points
-was ignored in favour of a hard-coded `"random"`; and `tests/test_map_to_irrep.py` imported
-`structure_constants_dense` from a PennyLane location that no longer exists.
+The implementation separates input normalization (`_pauli_inputs`), shared
+parameter checks (`_validation`), mapping (`map_to_irrep`), numerical kernels and
+the coordinating bridge. `notebooks/` contains examples and applications.

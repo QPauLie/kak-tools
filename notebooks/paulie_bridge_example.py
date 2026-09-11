@@ -15,6 +15,7 @@ The script walks through four things:
 """
 
 import numpy as np
+from scipy.linalg import expm
 
 from kak_tools import (
     classify_dla,
@@ -120,16 +121,13 @@ print(f"    PauLie get_algebra_basis()  {info.matrix_basis.shape}")
 print(f"    PauLie so(m) basis          {info.orthogonal_basis.shape}")
 print(f"    labelled with Pauli words   {len(result.algebra_basis)} entries")
 
-print("\nRe-running at a different time reuses the same circuit structure:")
-for other_time in [0.1, 1.7, 4.2]:
-    other = kak_decomposition(generators, coefficients, time=other_time)
-    same_structure = [w for w, _, _ in other.pauli_rotations] == [
-        w for w, _, _ in result.pauli_rotations
-    ]
-    print(
-        f"    t = {other_time:4.1f}: same Pauli sequence = {same_structure}, "
-        f"error {other.reconstruction_error:.1e}"
-    )
+print("\nReusing one compilation at different times:")
+for other_time in [0.0, -0.1, 1.7, 4.2]:
+    reconstructed = result.reconstruct(time=other_time)
+    error = np.max(np.abs(reconstructed - expm(other_time * result.hamiltonian_irrep)))
+    assert error < 1e-8
+    print(f"    t = {other_time:4.1f}: reconstruction error {error:.1e}")
+
 
 
 # ---------------------------------------------------------------------------
