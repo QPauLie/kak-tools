@@ -2,13 +2,14 @@
 
 import numpy as np
 import pytest
+from paulie import get_pauli_string
 from pennylane.pauli import PauliWord
 from scipy.linalg import expm
 
 from kak_tools.dense_cartan import group_matrix_to_reducible
 from kak_tools.map_to_irrep import E, anticom_graph_irrep, irrep_dot, make_signs, map_simple_to_irrep
 from kak_tools.paulie_bridge import (
-    as_pauli_words, classify_dla, kak_decomposition, labelled_matrix_basis,
+    as_pauli_words, kak_decomposition, labelled_matrix_basis,
     pauli_string_to_word,
 )
 
@@ -19,17 +20,17 @@ def so4_mapping():
                (1, 2): "YY", (1, 3): "IZ", (2, 3): "YX"}
     mapping = {plane: pauli_string_to_word(word) for plane, word in strings.items()}
     signs = {(0, 1): 1, (0, 2): -1, (0, 3): 1, (1, 2): 1, (1, 3): -1, (2, 3): -1}
-    return mapping, signs, classify_dla(["XX", "YY", "ZI", "IZ"])
+    return mapping, signs, get_pauli_string(["XX", "YY", "ZI", "IZ"]).get_class()
 
 
 def test_standard_and_alternative_star_gauges_preserve_all_physical_brackets(so4_mapping):
-    mapping, signs, info = so4_mapping
+    mapping, signs, classification = so4_mapping
     assert make_signs(mapping, 4, "BDI") == signs
     so3 = dict(zip([(0, 1), (0, 2), (1, 2)], as_pauli_words(["X", "Y", "Z"])))
     assert make_signs(so3, 3, "BDI") == {(0, 1): -1, (0, 2): 1, (1, 2): -1}
     gauge = [1, -1, 1, -1]
     alternative = {plane: complex(s * gauge[plane[0]] * gauge[plane[1]]) for plane, s in signs.items()}
-    matrices = labelled_matrix_basis(mapping, alternative, info)
+    matrices = labelled_matrix_basis(mapping, alternative, classification, n_qubits=2)
     physical = np.stack([1j * word.to_mat(wire_order=range(2)) for word in mapping.values()])
     mapped = np.stack([matrices[word] for word in mapping.values()])
     brackets = physical[:, None] @ physical[None, :] - physical[None, :] @ physical[:, None]
@@ -45,7 +46,7 @@ def test_standard_and_alternative_star_gauges_preserve_all_physical_brackets(so4
     ("missing_sign", "sign"), ("invalid_sign", "sign"),
 ])
 def test_public_matrix_basis_rejects_invalid_lie_maps(so4_mapping, defect, message):
-    mapping, signs, info = so4_mapping
+    mapping, signs, classification = so4_mapping
     if defect == "swap":
         original = set(mapping.values())
         mapping[(1, 2)], mapping[(1, 3)] = mapping[(1, 3)], mapping[(1, 2)]
@@ -64,7 +65,7 @@ def test_public_matrix_basis_rejects_invalid_lie_maps(so4_mapping, defect, messa
     else:
         signs[(1, 2)] = 2
     with pytest.raises(ValueError, match=message):
-        labelled_matrix_basis(mapping, signs, info)
+        labelled_matrix_basis(mapping, signs, classification)
 
 
 def test_three_one_qubit_clifford_generators_do_not_form_a_faithful_so4_basis():
@@ -80,7 +81,7 @@ def test_identity_u1_keeps_the_isolated_plane_and_accepts_another_gauge():
     word = pauli_string_to_word("I")
     mapping = {(0, 1): word}
     assert make_signs(mapping, 2, "BDI") == {(0, 1): -1}
-    labelled = labelled_matrix_basis(mapping, {(0, 1): 1}, classify_dla("I"))
+    labelled = labelled_matrix_basis(mapping, {(0, 1): 1}, get_pauli_string(["I"]).get_class())
     np.testing.assert_array_equal(labelled[word], E((0, 1), 2, "BDI"))
 
 

@@ -52,8 +52,8 @@ def test_givens_including_pi(matrix):
 def test_time_independent_factorization_and_physical_phase(p):
     # A fixed Clifford family realizes so(6); select horizontal words for p<q,
     # p=q and p>q independently of the bridge's default partition.
-    mapping, signs, info = map_dla_to_irrep(["XI", "YI", "ZX", "ZY", "ZZ"], invol_kwargs={"p": 1})
-    matrices = labelled_matrix_basis(mapping, signs, info)
+    mapping, signs, classification = map_dla_to_irrep(["XI", "YI", "ZX", "ZY", "ZZ"], invol_kwargs={"p": 1})
+    matrices = labelled_matrix_basis(mapping, signs, classification)
     words = [mapping[(i, j)] for i in range(p) for j in range(p, 6)]
     coefficients = np.random.default_rng(p).normal(size=len(words))
     h = sum(c * matrices[w] for c, w in zip(coefficients, words))
@@ -77,8 +77,8 @@ def test_time_independent_factorization_and_physical_phase(p):
 
 
 def test_small_rate_survives_long_time_and_vertical_pruning():
-    mapping, signs, info = map_dla_to_irrep(["X", "Y"])
-    matrices = labelled_matrix_basis(mapping, signs, info)
+    mapping, signs, classification = map_dla_to_irrep(["X", "Y"])
+    matrices = labelled_matrix_basis(mapping, signs, classification)
     h = 1e-12 * matrices[mapping[(0, 1)]]
     rotations, _ = decompose_horizontal_hamiltonian(h, 1, mapping, signs, time=0, tol=1e-8)
     reconstructed = np.eye(3)

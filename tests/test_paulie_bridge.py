@@ -3,6 +3,7 @@
 import numpy as np
 import pennylane as qml
 import pytest
+from paulie.classifier.classification import Classification
 from scipy.linalg import expm
 
 from kak_tools import as_pauli_words, kak_decomposition
@@ -17,10 +18,10 @@ def expand(patterns, n):
 
 
 def physical_evolution(result, time):
-    out = np.eye(2 ** result.info.n_qubits, dtype=complex)
+    out = np.eye(2 ** result.n_qubits, dtype=complex)
     for word, angle, kind in result.pauli_rotations:
         out = out @ expm(1j * angle * (time if kind == "a0" else 1)
-                         * word.to_mat(wire_order=range(result.info.n_qubits)))
+                         * word.to_mat(wire_order=range(result.n_qubits)))
     return out
 
 
@@ -40,7 +41,8 @@ def test_model_agnostic_compilation(patterns, n, m):
     generators = expand(patterns, n)
     coefficients = np.random.default_rng(n).normal(size=len(generators))
     result = kak_decomposition(generators, coefficients, time=.83)
-    assert result.irrep_size == result.info.orthogonal_size == m
+    assert isinstance(result.classification, Classification)
+    assert result.irrep_size == result.classification.get_orthogonal_size() == m
     assert result.involution == "BDI" and result.reconstruction_error < 1e-10
     assert len(result.cartan_angles) == m // 2
     assert {kind for _, _, kind in result.pauli_rotations} <= {"k1", "k2", "a0"}
@@ -92,7 +94,7 @@ def test_default_cutoff_retains_small_vertical_angles_at_longer_times():
 @pytest.mark.parametrize("generator, coefficient, time", [("II", .72, -1.2), ("YIII", -2.3, 4.2), ("Z", 0, .3)])
 def test_u1_evolution_preserves_global_phase_and_register(generator, coefficient, time):
     result = kak_decomposition(generator, [coefficient], time=0)
-    assert result.info.n_qubits == len(generator) and result.irrep_size == 2
+    assert result.n_qubits == len(generator) and result.irrep_size == 2
     assert set(result.mapping) == {(0, 1)}
     np.testing.assert_allclose(physical_evolution(result, time),
                               expected_evolution([generator], [coefficient], time, len(generator)),

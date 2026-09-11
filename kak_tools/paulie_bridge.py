@@ -13,7 +13,6 @@ Other classical types are available through the matrix-level routines in
 
 from __future__ import annotations
 
-import re
 import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -29,17 +28,14 @@ from ._pauli_inputs import (
     as_pauli_collection, as_pauli_words, pauli_string_to_word,
     pauli_word_to_string, prepare_pauli_inputs,
 )
+from ._pauli_rotations import reconstruct_from_pauli_rotations
 from ._validation import finite_real_scalar, nonnegative_tolerance, resolve_bdi_partition
-from ._pauli_rotations import reconstruct_from_pauli_rotations as _reconstruct_rotations
 from .map_to_irrep import _validate_so_mapping, map_simple_to_irrep
 
 __all__ = [
-    "DLAComponent",
-    "DLAInfo",
     "KAKResult",
     "as_pauli_collection",
     "as_pauli_words",
-    "classify_dla",
     "dla_pauli_basis",
     "kak_decomposition",
     "labelled_matrix_basis",
@@ -50,173 +46,18 @@ __all__ = [
 ]
 
 
-_COMPONENT_RE = re.compile(r"^(?:(?P<multiplicity>\d+)\*)?(?P<type>[a-z]+)\((?P<size>\d+)\)$")
+def dla_pauli_basis(generators, n_qubits: int | None = None, strict: bool = True) -> list[PauliWord]:
+    """Compute the complete native closure and convert it to PennyLane words.
 
-
-@dataclass(frozen=True)
-class DLAComponent:
-    """One ``multiplicity * type(size)`` summand reported by PauLie.
-
-    ``size`` is n in so(n), su(n), sp(n), or u(n), before matrix-size conversion.
+    Classification comes directly from PauLie on normalized generators. Its
+    dimension is checked after closure; it never stops discovery early.
+    ``strict=False`` warns instead of raising for a dimension mismatch.
     """
-
-    type: str
-    size: int
-    multiplicity: int = 1
-
-    @classmethod
-    def parse(cls, term: str) -> DLAComponent:
-        """Parse PauLie's ``[k*]name(size)`` format; raise ValueError for invalid terms."""
-        match = _COMPONENT_RE.match(term.replace(" ", ""))
-        if match is None:
-            raise ValueError(f"Cannot parse {term!r} as a PauLie algebra component.")
-        return cls(
-            type=match["type"],
-            size=int(match["size"]),
-            multiplicity=int(match["multiplicity"] or 1),
-        )
-
-    @property
-    def matrix_size(self) -> int:
-        """Size of one defining-representation block; sp(n) uses 2n matrices."""
-        return 2 * self.size if self.type == "sp" else self.size
-
-    def __str__(self) -> str:
-        core = f"{self.type}({self.size})"
-        return core if self.multiplicity == 1 else f"{self.multiplicity}*{core}"
+    collection = as_pauli_collection(generators, n_qubits)
+    return _native_pauli_basis(collection, collection.get_class(), strict=strict)
 
 
-@dataclass(frozen=True)
-class DLAInfo:
-    """PauLie classification and qubit count, adapted to kak_tools' irrep conventions."""
-
-    classification: Classification
-    n_qubits: int
-
-    @property
-    def algebra(self) -> str:
-        """str: PauLie's name for the algebra, e.g. ``"so(8)"`` or ``"u(1)+2*su(2)"``."""
-        return str(self.classification.get_algebra())
-
-    @property
-    def dim(self) -> int:
-        """int: Dimension of the full dynamical Lie algebra."""
-        return int(self.classification.get_dla_dim())
-
-    @property
-    def components(self) -> tuple[DLAComponent, ...]:
-        """Summands of PauLie's classified algebra."""
-        return tuple(
-            DLAComponent.parse(term) for term in self.classification.get_subalgebras()
-        )
-
-    @property
-    def matrix_basis(self) -> np.ndarray:
-        """PauLie's basis in its classified presentation.
-
-        For example, ``2*so(3)`` yields shape (6, 6, 6). Use :attr:`orthogonal_basis`
-        for the isomorphic so(4) presentation with shape (6, 4, 4).
-        """
-        return self.classification.get_algebra_basis()
-
-    @property
-    def orthogonal_basis(self) -> np.ndarray:
-        """PauLie's so(m) basis, ordered by ``combinations(range(m), 2)``.
-
-        Uses :attr:`orthogonal_size` and raises ValueError without an so(m) presentation.
-        """
-        m = self.orthogonal_size
-        if m is None:
-            raise ValueError(
-                f"PauLie classified this DLA as {self.algebra}, which has no so(m) "
-                "presentation, so there is no orthogonal basis to build."
-            )
-        return get_so_basis(m)
-
-    def is_algebra(self, algebra: str) -> bool:
-        """Test equality up to PauLie's low-rank algebra isomorphisms."""
-        return bool(self.classification.is_algebra(algebra))
-
-    @property
-    def is_simple(self) -> bool:
-        """bool: Whether the algebra is a single simple factor."""
-        return bool(self.classification.is_simple())
-
-    @property
-    def simple_component(self) -> DLAComponent:
-        """Unique simple summand; PauLie raises ClassificationException if not simple."""
-        return DLAComponent.parse(self.classification.get_simple_component())
-
-    @property
-    def orthogonal_size(self) -> int | None:
-        """The m of an isomorphic so(m) algebra, or None.
-
-        PauLie also resolves low-rank coincidences, such as 2*so(3) = so(4).
-        """
-        return self.classification.get_orthogonal_size()
-
-    def __str__(self) -> str:
-        return self.algebra
-
-
-def classify_dla(generators, n_qubits: int | None = None) -> DLAInfo:
-    """Classify generators accepted by :func:`as_pauli_words` through PauLie.
-
-    The register size is inferred unless ``n_qubits`` is supplied. Classification
-    uses the generators, not just the dimension of their algebra.
-    """
-    inputs = prepare_pauli_inputs(generators, n_qubits)
-    return _classification_for(inputs, inputs.collection())
-
-
-def dla_pauli_basis(
-    generators,
-    info: DLAInfo | None = None,
-    n_qubits: int | None = None,
-    strict: bool = True,
-) -> list[PauliWord]:
-    """Return the complete Pauli-word Lie closure, checked against PauLie.
-
-    Native ``PauliString.adjoint_map`` operations close the original generators;
-    only the final basis is converted to PennyLane PauliWords. Classification checks
-    the result's dimension and never stops the closure early.
-
-    ``info`` supplies metadata to verify against a fresh classification and a default
-    register size. With ``strict=False``, inconsistent metadata or closure dimensions
-    warn instead of raising. Explicit register conflicts always raise ValueError.
-    Use ``info.matrix_basis`` for a defining-representation matrix basis.
-    """
-    inputs = prepare_pauli_inputs(
-        generators, n_qubits if n_qubits is not None else (info.n_qubits if info else None)
-    )
-    collection = inputs.collection()
-    verified_info = _classification_for(inputs, collection, info, strict=strict)
-    return _native_pauli_basis(collection, verified_info, strict=strict)
-
-
-def _classification_for(inputs, collection, cached=None, strict=True):
-    """Classify this call's native collection, then check any supplied metadata."""
-    if cached is not None and cached.n_qubits != inputs.n_qubits:
-        raise ValueError(
-            f"n_qubits={inputs.n_qubits} conflicts with cached DLAInfo on "
-            f"{cached.n_qubits} qubits. Reclassify for the requested register."
-        )
-    actual = DLAInfo(collection.get_class(), inputs.n_qubits)
-    if cached is not None and (
-        actual.dim != cached.dim or not actual.is_algebra(cached.algebra)
-    ):
-        message = (
-            f"Cached DLAInfo describes {cached.algebra} (dimension {cached.dim}), "
-            f"but these generators produce {actual.algebra} (dimension {actual.dim})."
-        )
-        if strict:
-            raise ValueError(message)
-        warnings.warn(message + " Computing the complete basis of the actual generators.",
-                      UserWarning, stacklevel=3)
-    return actual
-
-
-def _native_pauli_basis(collection, info, strict=True):
+def _native_pauli_basis(collection, classification, strict=True):
     """Close under the original generators' adjoints, then check the dimension.
 
     By the Jacobi identity, this invariant span is the generated Lie algebra.
@@ -231,11 +72,11 @@ def _native_pauli_basis(collection, info, strict=True):
             if commutator is not None and commutator not in seen:
                 seen.add(commutator)
                 native_basis.append(commutator)
-    target = info.dim
+    target = classification.get_dla_dim()
     if len(native_basis) != target:
         message = (
             f"The Lie closure produced {len(native_basis)} Pauli words but PauLie "
-            f"classified the DLA as {info.algebra} of dimension {target}."
+            f"classified the DLA as {classification.get_algebra()} of dimension {target}."
         )
         if strict:
             raise ValueError(message)
@@ -243,28 +84,31 @@ def _native_pauli_basis(collection, info, strict=True):
     return [pauli_string_to_word(word) for word in native_basis]
 
 
-def labelled_matrix_basis(mapping, signs, info: DLAInfo, validate: bool = True) -> dict:
+def labelled_matrix_basis(
+    mapping, signs, classification: Classification, validate: bool = True, n_qubits: int | None = None,
+) -> dict:
     """Map Pauli words to signed matrices in PauLie's so(m) basis.
 
     ``mapping`` and ``signs`` come from :func:`map_dla_to_irrep`. Each word gets
     ``2 * sign * basis[k]``, matching kak_tools' generator normalization.
-    With ``validate=True``, check the complete Lie-map bijection, register,
-    basis shape and rotation-plane ordering. Invalid conventions raise ValueError.
+    With ``validate=True``, check the complete Lie-map bijection, wire labels,
+    basis shape and rotation-plane ordering. ``n_qubits`` also bounds the wires.
+    Invalid conventions raise ValueError.
     """
-    m = info.orthogonal_size
+    m = classification.get_orthogonal_size()
     if m is None:
         raise ValueError(
             f"labelled_matrix_basis needs an so(m) presentation; PauLie classified this "
-            f"DLA as {info.algebra}."
+            f"DLA as {classification.get_algebra()}."
         )
     # Match get_so_basis's upper-triangle ordering.
     index = {node: k for k, node in enumerate(zip(*np.triu_indices(m, k=1)))}
 
     if validate:
         signs = _validate_so_mapping(mapping, signs, m)
-        as_pauli_words(mapping.values(), n_qubits=info.n_qubits)
+        as_pauli_words(mapping.values(), n_qubits=n_qubits)
 
-    basis = info.orthogonal_basis
+    basis = get_so_basis(m)
     if validate:
         if basis.shape != (len(index), m, m):
             raise ValueError(
@@ -282,11 +126,12 @@ def labelled_matrix_basis(mapping, signs, info: DLAInfo, validate: bool = True) 
         for node, word in mapping.items()
     }
 
+
 #: The only involution kak_tools can build a Pauli-word irrep mapping for.
 PAULI_LEVEL_INVOLUTION = "BDI"
 
 
-def _resolve_orthogonal(info: DLAInfo, involution: str | None) -> tuple[int, str]:
+def _resolve_orthogonal(classification: Classification, involution: str | None) -> tuple[int, str]:
     """Resolve the so(m) size and BDI involution, rejecting unsupported algebras."""
     involution = involution or PAULI_LEVEL_INVOLUTION
     if involution != PAULI_LEVEL_INVOLUTION:
@@ -295,10 +140,10 @@ def _resolve_orthogonal(info: DLAInfo, involution: str | None) -> tuple[int, str
             f"{PAULI_LEVEL_INVOLUTION} involution, not {involution!r}."
         )
 
-    size = info.orthogonal_size
+    size = classification.get_orthogonal_size()
     if size is None:
         raise NotImplementedError(
-            f"PauLie classified this DLA as {info.algebra}, which is not (isomorphic to) "
+            f"PauLie classified this DLA as {classification.get_algebra()}, which is not (isomorphic to) "
             "a single so(m). kak_tools can only build a Pauli-word irrep mapping for "
             "so(m) with a BDI involution. Split the algebra into its components with "
             "`kak_tools.split_pauli_algebra` and decompose them separately, or use the "
@@ -310,41 +155,34 @@ def _resolve_orthogonal(info: DLAInfo, involution: str | None) -> tuple[int, str
 def map_dla_to_irrep(
     generators,
     dla: Sequence[PauliWord] | None = None,
-    info: DLAInfo | None = None,
     n_qubits: int | None = None,
     involution: str | None = None,
     invol_kwargs: dict | None = None,
 ):
-    """Return ``(mapping, signs, info)`` with the irrep size supplied by PauLie.
+    """Return ``(mapping, signs, classification)`` using PauLie's native result.
 
-    Generators accepted by :func:`as_pauli_words` must be horizontal. ``dla`` may
-    supply the complete distinct PauliWord basis; otherwise its closure is computed.
-    ``info`` is checked against a fresh classification and supplies a default register
-    size when ``n_qubits`` is omitted. The default involution is BDI; ``invol_kwargs``
-    can specify its p/q partition, for example ``{"p": 3}``.
-
-    The mapping sends irrep index pairs to Pauli words, accompanied by their signs.
+    Generators must be horizontal for the selected BDI partition. ``dla`` may
+    supply the complete distinct PauliWord basis; otherwise closure is computed.
+    Register width is inferred from the generators unless ``n_qubits`` is supplied.
     """
-    inputs = prepare_pauli_inputs(
-        generators, n_qubits if n_qubits is not None else (info.n_qubits if info else None)
-    )
+    inputs = prepare_pauli_inputs(generators, n_qubits)
     collection = inputs.collection()
-    info = _classification_for(inputs, collection, info)
-    irrep_size, involution = _resolve_orthogonal(info, involution)
+    classification = collection.get_class()
+    irrep_size, involution = _resolve_orthogonal(classification, involution)
     p, q = resolve_bdi_partition(irrep_size, invol_kwargs)
     if dla is None:
-        dla = _native_pauli_basis(collection, info)
+        dla = _native_pauli_basis(collection, classification)
     else:
         dla = list(dla)
-        if (len(dla) != info.dim or not all(isinstance(word, PauliWord) for word in dla)
+        if (len(dla) != classification.get_dla_dim() or not all(isinstance(word, PauliWord) for word in dla)
                 or len(set(dla)) != len(dla)):
-            raise ValueError(f"The supplied DLA basis must contain {info.dim} distinct PauliWords.")
+            raise ValueError(f"The supplied DLA basis must contain {classification.get_dla_dim()} distinct PauliWords.")
         # Apply the same register checks to supplied basis elements as to generators.
         as_pauli_words(dla, inputs.n_qubits)
         if not set(inputs.words).issubset(dla):
             raise ValueError("The supplied DLA basis does not contain all generators.")
     mapping, signs = _map_verified_basis(inputs.words, dla, irrep_size, involution, p, q)
-    return mapping, signs, info
+    return mapping, signs, classification
 
 
 def _map_verified_basis(words, basis, irrep_size, involution, p, q):
@@ -368,6 +206,9 @@ def _map_verified_basis(words, basis, irrep_size, involution, p, q):
 class KAKResult:
     """Compiled Pauli-word KAK decomposition and its defining irrep.
 
+    ``classification`` is PauLie's native Classification; ``n_qubits`` records
+    the physical register independently of its irreducible representation.
+
     ``pauli_rotations`` contains (PauliWord, angle, kind) triples: ``k1``/``k2``
     are vertical rotations; ``a`` and ``a0`` are Cartan factors. Only ``a0`` rates
     are scaled by evolution time.
@@ -380,7 +221,8 @@ class KAKResult:
     or None when validation was disabled.
     """
 
-    info: DLAInfo
+    classification: Classification
+    n_qubits: int
     involution: str
     irrep_size: int
     pauli_rotations: list
@@ -408,20 +250,10 @@ class KAKResult:
     def __repr__(self) -> str:  # pragma: no cover - cosmetic
         err = "not validated" if self.reconstruction_error is None else f"{self.reconstruction_error:.2e}"
         return (
-            f"KAKResult(algebra={self.info.algebra}, involution={self.involution}, "
+            f"KAKResult(algebra={self.classification.get_algebra()}, involution={self.involution}, "
             f"n={self.irrep_size}, rotations={len(self.pauli_rotations)}, "
             f"reconstruction_error={err})"
         )
-
-
-def reconstruct_from_pauli_rotations(
-    pauli_rotations, algebra_basis, irrep_size, time=None
-) -> np.ndarray:
-    """Recompose ordered ``(PauliWord, angle, kind)`` rotations in the irrep.
-
-    ``algebra_basis`` is the labelled matrix basis; ``time`` scales only ``a0`` rates.
-    """
-    return _reconstruct_rotations(pauli_rotations, algebra_basis, irrep_size, time=time)
 
 
 def kak_decomposition(
@@ -462,14 +294,14 @@ def kak_decomposition(
     atol = nonnegative_tolerance(atol, "atol")
     words, coefficients = inputs.hamiltonian_terms(coefficients)
     collection = inputs.collection()
-    info = _classification_for(inputs, collection)
-    irrep_size, involution = _resolve_orthogonal(info, involution)
+    classification = collection.get_class()
+    irrep_size, involution = _resolve_orthogonal(classification, involution)
     p, q = resolve_bdi_partition(irrep_size, invol_kwargs)
-    basis = _native_pauli_basis(collection, info)
+    basis = _native_pauli_basis(collection, classification)
     mapping, signs = _map_verified_basis(words, basis, irrep_size, involution, p, q)
 
     # Label PauLie's orthogonal presentation with the verified Pauli words.
-    algebra_basis = labelled_matrix_basis(mapping, signs, info)
+    algebra_basis = labelled_matrix_basis(mapping, signs, classification, n_qubits=inputs.n_qubits)
     hamiltonian = np.zeros((irrep_size, irrep_size))
     for coeff, word in zip(coefficients, words):
         hamiltonian = hamiltonian + coeff * algebra_basis[word]
@@ -501,7 +333,8 @@ def kak_decomposition(
             )
 
     return KAKResult(
-        info=info,
+        classification=classification,
+        n_qubits=inputs.n_qubits,
         involution=involution,
         irrep_size=irrep_size,
         pauli_rotations=pauli_rotations,
