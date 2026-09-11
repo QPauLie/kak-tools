@@ -151,3 +151,23 @@ def test_partitioned_cartan_types(kind, p, q, validate):
     _blocks(k1, p, check)
     _blocks(k2, p, check)
     _cossin(center, p, q)
+
+
+@pytest.mark.parametrize("fixture_name", ["reference_matrix_bd", "reference_matrix_bd2"])
+def test_bd_reference_schur_singletons(request, fixture_name):
+    """Upstream regressions for singletons and an odd run of +1 Schur blocks."""
+    matrix = request.getfixturevalue(fixture_name)
+    k1, center, k2 = nd.bd_kak(matrix, validate=True)
+    _close(k1 @ center @ k2, matrix)
+    _repeat(k1, check=_orthogonal)
+    _skew_schur(center)
+    _repeat(k2, check=_orthogonal)
+
+
+@pytest.mark.parametrize("angle", [0.0, 1e-10], ids=["identity", "tiny-rotation"])
+def test_schur_sqrt_with_fixed_axis(angle):
+    c, s = np.cos(angle), np.sin(angle)
+    matrix = block_diag([[c, s], [-s, c]], 1)
+    square_root = nd.schur_sqrt(matrix)
+    _close(square_root @ square_root, matrix, atol=1e-14)
+    _orthogonal(square_root, atol=1e-14)

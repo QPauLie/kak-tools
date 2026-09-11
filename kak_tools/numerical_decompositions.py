@@ -410,33 +410,33 @@ def bdi_kak(o, p, q, validate=_validate_default):
     return k1, _cartan_matrix(theta, p, q), k2
 
 
+def single_block(matrix, i):
+    """Identify the first unpaired fixed axis in an odd run of +1 Schur blocks."""
+    fixed = np.isclose(np.diag(matrix), 1.0)
+    # A nonzero subdiagonal identifies a real 2x2 Schur block, even when
+    # cos(theta) rounds to one. Such a rotation is not a pair of fixed axes.
+    coupled = np.diag(matrix, k=-1) != 0
+    fixed[:-1] &= ~coupled
+    fixed[1:] &= ~coupled
+    if not fixed[i] or (i > 0 and fixed[i - 1]):
+        return False
+    end = i + 1
+    while end < len(fixed) and fixed[end]:
+        end += 1
+    return (end - i) % 2 == 1
+
+
 def schur_sqrt(u):
-    dim = u.shape[0]
-    if dim % 2 == 1:
-        # A small nonzero rotation can have cos(theta) rounded to one. Locate
-        # the fixed axis using its whole row and column, not the diagonal alone.
-        residual = u - np.eye(dim)
-        idx = np.argmin(norm(residual, axis=0) + norm(residual, axis=1))
-        sliced_u = np.block(
-            [[u[:idx, :idx], u[:idx, idx + 1 :]], [u[idx + 1 :, :idx], u[idx + 1 :, idx + 1 :]]]
-        )
-        sl_sqrt = schur_sqrt(sliced_u)
-        sqrt = np.block(
-            [
-                [sl_sqrt[:idx, :idx], np.zeros((idx, 1)), sl_sqrt[:idx, idx:]],
-                [np.zeros((1, idx)), 1.0, np.zeros((1, dim - idx - 1))],
-                [sl_sqrt[idx:, :idx], np.zeros((dim - idx - 1, 1)), sl_sqrt[idx:, idx:]],
-            ]
-        )
-        return sqrt
+    """Find a real square root without pairing an isolated +1 with a rotation."""
+    blocks = [i for i in range(len(u)) if not single_block(u, i)][::2]
     sqrt = np.copy(u)
-    for i in range(0, dim - 1, 2):
+    for i in blocks:
         # atan2 also covers exact +/-I and preserves nearby nonzero angles.
         theta = np.arctan2(u[i, i + 1], u[i, i]) / 2
         sqrt[i : i + 2, i : i + 2] = np.array(
             [[np.cos(theta), np.sin(theta)], [-np.sin(theta), np.cos(theta)]]
         )
-
+    assert np.allclose(sqrt @ sqrt, u)
     return sqrt
 
 
@@ -625,12 +625,21 @@ def bd_kak(o, validate=_validate_default):
     assert np.allclose(o[:n, n:], 0.0) and np.allclose(o[n:, :n], 0.0)
 
     delta = o[:n, :n] @ o[n:, n:].T
-    mu_squared, o1 = schur(delta)
+    mu_squared, o1, _ = schur(delta, output="real", sort=lambda x: np.isclose(x, -1.0))
+
+    single_blocks = [i for i in range(n) if single_block(mu_squared, i)]
+    for i in range(0, len(single_blocks) - 1, 2):
+        roll_ids = list(range(single_blocks[i], single_blocks[i + 1] + 1))
+        o1[:, roll_ids] = np.roll(o1[:, roll_ids], shift=1, axis=1)
+        mu_squared[:, roll_ids] = np.roll(mu_squared[:, roll_ids], shift=1, axis=1)
+        mu_squared[roll_ids] = np.roll(mu_squared[roll_ids], shift=1, axis=0)
+
     if det(o1) < 0:
-        o1[:, :2] = np.roll(o1[:, :2], shift=1, axis=1)
-        mu_squared[:, :2] = np.roll(mu_squared[:, :2], shift=1, axis=1)
-        mu_squared[:2] = np.roll(mu_squared[:2], shift=1, axis=0)
-        assert det(o1) > 0
+        # A coordinate reflection preserves Schur blocks, including a lone axis.
+        o1[:, 0] *= -1
+        mu_squared[0, :] *= -1
+        mu_squared[:, 0] *= -1
+
     mu = schur_sqrt(mu_squared)
     o2 = mu @ o1.conj().T @ o[n:, n:]
     z = np.zeros_like(o1)
