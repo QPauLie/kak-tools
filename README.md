@@ -1,8 +1,10 @@
 # KAK tools
 
-Deterministic Cartan decompositions for quantum compilation. The package provides
-matrix-level routines for the classical Cartan types and a Pauli-level BDI workflow
-using [PauLie](https://github.com/QPauLie/PauLie) for algebra classification.
+This fork extends [the original kak-tools](https://github.com/dwierichs/kak-tools)
+with a Pauli-level BDI compilation workflow using
+[PauLie](https://github.com/QPauLie/PauLie) for algebra classification. It adds
+Pauli/PennyLane input conversion, signed mappings to so(m) matrices and reusable
+Pauli-rotation decompositions, including odd matrix sizes and explicit BDI partitions.
 
 ## Installation and tests
 
@@ -58,22 +60,12 @@ The example in `notebooks/paulie_bridge_example.py` uses PauLie's native
 | `paulie.common.algebra_basis.get_so_basis(m)` | Basis in the chosen so(m) presentation |
 | `dla_pauli_basis` | Complete native Pauli closure, converted to PennyLane words |
 | `map_dla_to_irrep` | Return `(mapping, signs, classification)` for signed rotation planes |
-| `labelled_matrix_basis` | Label PauLie's orthogonal matrices with verified Pauli words |
+| `labelled_matrix_basis(mapping, signs, classification, n_qubits=...)` | Label PauLie's orthogonal matrices with verified Pauli words |
 | `pauli_string_to_word`, `pauli_word_to_string` | Convert between PauLie and PennyLane |
 
 For `2*so(3)`, the classified basis uses 6×6 matrices, while `get_so_basis(4)` uses
 4×4 matrices. Dimension alone is insufficient: so(7) and sp(3) both have dimension 21.
 `get_simple_component()` raises PauLie's `ClassificationException` for nonsimple algebras.
-
-### Migration
-
-`classify_dla`, `DLAInfo` and `DLAComponent` are removed. Use the native factory above
-for strings/native inputs; `as_pauli_collection(generators).get_class()` preserves mixed/PennyLane normalization.
-`result.classification` replaces `result.info`; register width is `result.n_qubits`.
-`dla_pauli_basis` and `map_dla_to_irrep` no longer accept `info`. Pass the returned
-classification to `labelled_matrix_basis(mapping, signs, classification, n_qubits=...)`.
-`full_workflows.paulie_workflow(..., t0=t)` is removed; use
-`kak_decomposition(..., time=t).pauli_rotations`.
 
 ### Inputs and conventions
 
@@ -84,6 +76,8 @@ rejected: splitting a sum changes the independently generated algebra. Separate
 Trailing identities and explicit Identity wires preserve register width. Native bit
 inputs are normalized to consistent endianness. Coefficients and times must be finite
 real scalars; numeric complex scalars with zero imaginary part are accepted.
+For mixed or PennyLane inputs, `as_pauli_collection(generators).get_class()`
+returns the native PauLie classification after input normalization.
 
 The physical convention is **exp(+it ΣcP)**. A PennyLane `PauliRot` takes
 `-2 * coefficient`, additionally multiplied by time for central `a0` rates.
@@ -109,9 +103,7 @@ time; these differ from `recursive_bdi`'s arrays of CS angles.
 - No rotations are discarded by default. Explicit `tol` drops small vertical
   rotations while retaining central rates. `validate=True` checks reconstruction;
   floating-point errors can accumulate at very large times.
-- `dense_cartan.bdi` handles horizontal or general group matrices, returning block
-  factors and CS angles. `numerical_decompositions.bdi_kak` returns full matrices.
-  Other classical types are available through `numerical_decompositions`; CII
-  supports unequal/empty partitions and repeated or endpoint angles. Its factors
-  are checked in double precision; arbitrary noisy inputs and relative accuracy
-  at arbitrarily small angles are not guaranteed.
+- Numerical corrections cover CII with unequal/empty partitions and repeated or
+  endpoint angles, and DIII with degenerate eigenvalues and small rotations.
+  Factors are checked in double precision; arbitrary noisy inputs and relative
+  accuracy at arbitrarily small angles are not guaranteed.
