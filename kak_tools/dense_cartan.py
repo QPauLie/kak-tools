@@ -2,7 +2,6 @@
 
 import numpy as np
 from itertools import combinations
-from pennylane.pauli import PauliSentence
 from scipy.linalg import block_diag, cossin, expm, det
 
 from ._horizontal_bdi import _cartan_matrix
@@ -287,6 +286,8 @@ def angles_to_reducible(theta, s, e, mapping, signs):
     for odd widths ``q = p + 1`` and using ``p`` silently assigns the angles to the
     wrong Pauli words.
     """
+    from pennylane.pauli import PauliSentence
+
     p = (e - s) // 2
     q = (e - s) - p
     op = {
@@ -319,6 +320,8 @@ def group_matrix_to_reducible(matrix, start, mapping, signs, tol=1e-10):
     exactly on :math:`\\pi` -- for instance for a translation-invariant Hamiltonian with
     uniform coefficients.)
     """
+    from pennylane.pauli import PauliSentence
+
     op = {}
     seen_ids = set()
     for i, j in zip(*np.where(np.abs(matrix) > tol), strict=True):

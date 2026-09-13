@@ -47,7 +47,6 @@ __all__ = [
     "map_matrix_to_reducible",
     "irrep_dot",
     "make_signs",
-    "E",
     # Pauli-word Lie closure
     "lie_closure_pauli_words",
     "split_pauli_algebra",
@@ -93,7 +92,6 @@ _SUBMODULES = {
         "map_matrix_to_reducible",
         "irrep_dot",
         "make_signs",
-        "E",
     ),
     "pauli_dlas": ("lie_closure_pauli_words", "split_pauli_algebra", "anticom_graph_pauli"),
 }

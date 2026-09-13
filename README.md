@@ -100,7 +100,7 @@ Everything `kak_tools` exports, by layer:
 | `group_matrix_to_reducible`, `map_recursive_decomp_to_reducible` | Map dense factors back to Pauli rotations through a signed mapping |
 | `a_kak`, `ai_kak`, `aii_kak`, `aiii_kak`, `bd_kak`, `bdi_kak`, `c_kak`, `ci_kak`, `cii_kak`, `diii_kak` | Matrix-level KAK decompositions `K1 @ A @ K2` for the ten classical Cartan types |
 | `map_simple_to_irrep`, `map_irrep_to_matrices`, `map_matrix_to_reducible` | Map an so(n) Pauli basis to rotation planes, to matrices, and back |
-| `irrep_dot`, `make_signs`, `E` | Build a Hamiltonian in the irrep, derive the star-gauge signs, and the plane generator |
+| `irrep_dot`, `make_signs` | Build a Hamiltonian in the irrep and derive the star-gauge signs |
 | `lie_closure_pauli_words`, `split_pauli_algebra`, `anticom_graph_pauli` | Pauli-word Lie closure, its anticommutation graph and its connected components |
 
 The public names are imported lazily, so the numpy-only routines load without
