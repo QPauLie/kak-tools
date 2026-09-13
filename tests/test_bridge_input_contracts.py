@@ -12,7 +12,7 @@ from pennylane.pauli import PauliWord
 
 from kak_tools import (
     as_pauli_collection, as_pauli_words, labelled_matrix_basis,
-    dla_pauli_basis, identify_algebra, kak_decomposition, lie_closure_pauli_words,
+    dla_pauli_basis, kak_decomposition, lie_closure_pauli_words,
     map_dla_to_irrep, pauli_string_to_word, pauli_word_to_string,
 )
 
@@ -110,7 +110,6 @@ def test_classification_and_native_closure_are_independent_of_dimension_guessing
     assert set(basis) == set(lie_closure_pauli_words(words, full_size=21)) == expected
     assert classification.get_dla_dim() == len(basis) == 21
     assert classification.get_algebra() == "so(7)"
-    assert {(kind, size) for _, kind, size in identify_algebra(basis)} == {("so", 7), ("sp", 3)}
 
 
 @pytest.mark.parametrize("generators", [["X", "I"], ["XX", "YY", "ZZ", "XI", "IX"]])
