@@ -29,7 +29,7 @@ def test_signed_svd(p, q, kind):
     h = np.block([[np.zeros((p, p)), block], [-block.T, np.zeros((q, q))]])
     k, rates, planes = horizontal_generator_decomposition(h, p)
     a = np.zeros_like(h)
-    for (i, j), rate in zip(planes, rates):
+    for (i, j), rate in zip(planes, rates, strict=True):
         a[i, j], a[j, i] = rate, -rate
     np.testing.assert_allclose(k @ a @ k.T, h, atol=2e-13)
     np.testing.assert_allclose(k @ k.T, np.eye(p + q), atol=2e-13)
@@ -48,6 +48,14 @@ def test_givens_including_pi(matrix):
     np.testing.assert_allclose(reconstructed, matrix, atol=2e-13)
 
 
+@pytest.mark.parametrize("matrix", [np.diag([-1., 1., 1.]), np.array([[1., .1], [0., 1.]])])
+def test_givens_rejects_reflections_and_non_orthogonal_input(matrix):
+    # Every elimination has determinant one, so the leftover diagonal would
+    # otherwise carry a silent reflection into the rebuilt matrix.
+    with pytest.raises(ValueError, match="special orthogonal"):
+        _special_orthogonal_givens(matrix)
+
+
 @pytest.mark.parametrize("p", [1, 3, 5])
 def test_time_independent_factorization_and_physical_phase(p):
     # A fixed Clifford family realizes so(6); select horizontal words for p<q,
@@ -56,8 +64,8 @@ def test_time_independent_factorization_and_physical_phase(p):
     matrices = labelled_matrix_basis(mapping, signs, classification)
     words = [mapping[(i, j)] for i in range(p) for j in range(p, 6)]
     coefficients = np.random.default_rng(p).normal(size=len(words))
-    h = sum(c * matrices[w] for c, w in zip(coefficients, words))
-    physical_h = sum(c * w.to_mat(wire_order=[0, 1]) for c, w in zip(coefficients, words))
+    h = sum(c * matrices[w] for c, w in zip(coefficients, words, strict=True))
+    physical_h = sum(c * w.to_mat(wire_order=[0, 1]) for c, w in zip(coefficients, words, strict=True))
     rotations = decompose_horizontal_hamiltonian(h, p, mapping, signs, time=0)
     assert decompose_horizontal_hamiltonian(h, p, mapping, signs, time=4.2) == rotations
     left = [(w, a) for w, a, kind in rotations if kind == "k1"]

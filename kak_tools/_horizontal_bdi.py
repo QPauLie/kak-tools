@@ -98,6 +98,11 @@ def _special_orthogonal_givens(matrix, start=0):
             remainder[upper] = cosine * old_upper + sine * old_lower
             remainder[lower] = -sine * old_upper + cosine * old_lower
             rotations.append(((start + upper, start + lower), -float(np.arctan2(b, a))))
+    # Every elimination has determinant one, so an orthogonal input leaves
+    # diag(1, ..., 1, det); a reflection or a non-orthogonal input would
+    # otherwise be rebuilt silently as a different matrix.
+    if not np.allclose(remainder, np.eye(n), atol=1e-10, rtol=0):
+        raise ValueError("The Givens factorization requires a special orthogonal matrix.")
     return rotations
 
 
