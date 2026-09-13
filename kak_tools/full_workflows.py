@@ -31,13 +31,12 @@ def minimal_workflow_tfXY(n, t0, coefficients="random", rng=None):
     recursive_decomp = recursive_bdi(U, 2 * n, validate=False, return_all=False)
 
     mapping = make_so_2n_full_mapping_str(n)
-    pauli_decomp = map_recursive_decomp_to_reducible_str(
+    return map_recursive_decomp_to_reducible_str(
         recursive_decomp,
         mapping,
         time=t0,
         tol=None,
     )
-    return pauli_decomp
 
 
 def complete_workflow_tfXY(n, t0, coefficients="random", rng=None):
@@ -53,10 +52,9 @@ def complete_workflow_tfXY(n, t0, coefficients="random", rng=None):
     U = expm(t0 * H_irrep)
     recursive_decomp = recursive_bdi(U, n_so, validate=False, return_all=False)
 
-    pauli_decomp = map_recursive_decomp_to_reducible(
+    return map_recursive_decomp_to_reducible(
         recursive_decomp, mapping, signs, time=t0, validate=False
     )
-    return pauli_decomp
 
 
 def workflow_tfXY_known_algebra(n, t0, coefficients="random", rng=None):
@@ -72,10 +70,9 @@ def workflow_tfXY_known_algebra(n, t0, coefficients="random", rng=None):
     U = expm(t0 * H_irrep)
     recursive_decomp = recursive_bdi(U, n_so, validate=False, return_all=False)
 
-    pauli_decomp = map_recursive_decomp_to_reducible(
+    return map_recursive_decomp_to_reducible(
         recursive_decomp, mapping, signs, time=t0, validate=False
     )
-    return pauli_decomp
 
 
 def diagonalization_tfXY(n, t0, coefficients="random", rng=None):

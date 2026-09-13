@@ -40,6 +40,26 @@ class HorizontalEmbeddingError(ValueError):
     """The horizontal Pauli words do not fit the horizontal subspace of the involution."""
 
 
+def _word_key(word):
+    """Sort key for Pauli words, so the mapping never depends on the hash seed."""
+    return sorted((type(wire).__name__, wire, pauli) for wire, pauli in word.items())
+
+
+def _canonical(word):
+    """The same Pauli word with its wires in sorted order, so ``word.wires`` is predictable."""
+    try:
+        return PauliWord(dict(sorted(word.items(), key=lambda item: (type(item[0]).__name__, item[0]))))
+    except TypeError:  # wires of mixed, unorderable types: keep the given order
+        return word
+
+
+def _slot_key(slot):
+    """Sort key for Majorana slots (cliques of words, or a word's private slot)."""
+    if isinstance(slot, tuple):
+        return (1, _word_key(slot[0]), slot[1])
+    return (0, sorted(_word_key(word) for word in slot))
+
+
 def _majorana_slots(pauli_graph):
     """Recover the Majorana slots that the horizontal Pauli words pair up (paper App. F.6).
 
@@ -53,7 +73,11 @@ def _majorana_slots(pauli_graph):
     slots = nx.Graph()
     for word in pauli_graph:
         neighbourhood = pauli_graph.subgraph(pauli_graph[word])
-        cliques = [frozenset(clique) for clique in nx.connected_components(neighbourhood)]
+        # networkx iterates the induced node set, so order the cliques ourselves.
+        cliques = sorted(
+            (frozenset(clique) for clique in nx.connected_components(neighbourhood)),
+            key=lambda clique: sorted(_word_key(w) for w in clique),
+        )
         if len(cliques) > 2 or any(
             neighbourhood.subgraph(clique).number_of_edges() != len(clique) * (len(clique) - 1) // 2
             for clique in cliques
@@ -86,7 +110,11 @@ def map_horizontal_subgraph(pauli_graph, p, q):
             raise HorizontalEmbeddingError(
                 "The horizontal Pauli words do not anticommute like rotation planes."
             ) from exc
-        components.append(([s for s in component if colour[s] == 0], [s for s in component if colour[s]]))
+        sides = sorted(
+            (sorted((s for s in component if colour[s] == c), key=_slot_key) for c in (0, 1)),
+            key=lambda side: _slot_key(side[0]),
+        )
+        components.append(tuple(sides))
 
     # Every slot becomes a row or a column, so the orientations must land the row total
     # in [total - q, p]; track which totals are reachable component by component.
@@ -111,10 +139,10 @@ def map_horizontal_subgraph(pauli_graph, p, q):
 
     index = {}
     next_row, next_column = 0, p
-    for (first, second), flipped in zip(components, reversed(flips)):
+    for (first, second), flipped in zip(components, reversed(flips), strict=True):
         rows, columns = (second, first) if flipped else (first, second)
-        index |= dict(zip(rows, range(next_row, next_row + len(rows))))
-        index |= dict(zip(columns, range(next_column, next_column + len(columns))))
+        index |= dict(zip(rows, range(next_row, next_row + len(rows)), strict=True))
+        index |= dict(zip(columns, range(next_column, next_column + len(columns)), strict=True))
         next_row += len(rows)
         next_column += len(columns)
     return {_plane(index[a], index[b]): word for a, b, word in slots.edges(data="word")}
@@ -148,7 +176,7 @@ def _complete_mapping(mapping, n):
                         f"The Pauli words at planes {(a, b)} and {_plane(shared, k)} commute, "
                         f"so they do not represent so({n})."
                     )
-                mapping[target] = word
+                mapping[target] = _canonical(word)
                 planes.append(target)
 
 
@@ -302,7 +330,7 @@ def irrep_dot(coeffs, generators, mapping, signs=None, *, n, invol_type="BDI"):
         inv_mapping[op] = ((i, j), sign)
 
     out = np.zeros((n, n))
-    for c, gen in zip(coeffs, generators):
+    for c, gen in zip(coeffs, generators, strict=True):
         if gen not in inv_mapping:
             raise ValueError(f"Generator {gen!r} is missing from the irrep mapping.")
         node, sign = inv_mapping[gen]
@@ -313,7 +341,7 @@ def irrep_dot(coeffs, generators, mapping, signs=None, *, n, invol_type="BDI"):
 def map_matrix_to_reducible(matrix, mapping, signs, invol_type):
     _require_bdi(invol_type)
     op = {}
-    for i, j in zip(*np.where(matrix)):
+    for i, j in zip(*np.where(matrix), strict=True):
         if i < j:
             op[mapping[(i, j)]] = matrix[i, j] / 2 / signs[(i, j)]
 

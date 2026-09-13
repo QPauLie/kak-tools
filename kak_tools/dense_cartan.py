@@ -300,11 +300,10 @@ def angles_to_reducible_str(theta, s, e, mapping):
     """String-mapping variant of ``angles_to_reducible``; see there for the ``q`` offset."""
     p = (e - s) // 2
     q = (e - s) - p
-    op = {
+    return {
         (pw_sign := mapping[(s + i, s + q + i)])[0]: th / 2 / pw_sign[1]
         for i, th in enumerate(theta)
     }
-    return op
 
 
 def group_matrix_to_reducible(matrix, start, mapping, signs, tol=1e-10):

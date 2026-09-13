@@ -25,21 +25,21 @@ def test_recursive_compilation_in_circuit(n):
     factors = recursive_bdi(expm(epsilon * h), 2 * n, validate=False)
     rotations = map_recursive_decomp_to_reducible(factors, mapping, signs, time=epsilon, validate=True)
 
-    @qml.qnode(qml.device("default.qubit", wires=n))
+    # The rotations are the factors of U = R_1 ... R_N with R_k = exp(+i c_k P_k), so a
+    # circuit applies them last to first, each as PauliRot(-2 c_k). The spin lift of the
+    # irrep fixes the circuit only up to a global sign.
     def circuit(time):
-        qml.X(0)
-        for word, angle, kind in reversed(rotations):
-            coefficient = angle * (time if kind == "a0" else 1)
-            qml.PauliRot(2 * coefficient, qml.pauli.pauli_word_to_string(word), wires=word.wires)
-        return qml.probs()
+        return qml.tape.QuantumScript([
+            qml.PauliRot(-2 * angle * (time if kind == "a0" else 1), qml.pauli.pauli_word_to_string(word), wires=word.wires)
+            for word, angle, kind in reversed(rotations)
+        ])
 
-    times = [-1.3, 0., 25.]
-    actual = np.array([circuit(t) for t in times])
     physical_h = sum(c * w.to_mat(wire_order=range(n)) for c, w in zip(coefficients, words, strict=True))
-    initial = np.zeros(2**n)
-    initial[2**(n - 1)] = 1
-    expected = np.array([np.abs(expm(-1j * t * physical_h) @ initial)**2 for t in times])
-    np.testing.assert_allclose(actual, expected, atol=1e-10)
+    for time in [-1.3, 0., 25.]:
+        actual = qml.matrix(circuit(time), wire_order=range(n))
+        expected = expm(1j * time * physical_h)
+        sign = np.sign(np.trace(actual @ expected.conj().T).real) or 1.
+        np.testing.assert_allclose(actual, sign * expected, atol=1e-10)
 
 
 def test_legacy_so2_angle_survives_a_sine_rounded_beyond_one():

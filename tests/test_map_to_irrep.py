@@ -1,6 +1,10 @@
 """Pauli-word closure and so(n) mapping checked against PennyLane and dense commutators,
 and the transverse-field XY workflows checked against the qubit evolution."""
 
+import os
+import pathlib
+import subprocess
+import sys
 import re
 from itertools import combinations, product
 import numpy as np
@@ -236,3 +240,26 @@ def test_diagonalization_rates_reproduce_the_qubit_spectrum(n):
     rates = diagonalization_tfXY(n, .1, "random", rng=n)
     spectrum = sorted(sum(s * r for s, r in zip(signs, rates)) for signs in product([-1, 1], repeat=n))
     np.testing.assert_allclose(spectrum, np.linalg.eigvalsh(qubit_hamiltonian(n, "random", rng=n)), atol=1e-12)
+
+
+def test_mapping_is_independent_of_the_hash_seed_and_orders_wires():
+    """The plane assignment must not depend on set iteration order, and mapped words
+    carry their wires in sorted order so ``word.wires`` can be used directly for gates."""
+    script = (
+        "import sys; sys.path.insert(0, 'tests')\n"
+        "from test_map_to_irrep import tfxy_words\n"
+        "from kak_tools import lie_closure_pauli_words, map_simple_to_irrep\n"
+        "for n in (2, 3, 4):\n"
+        "    words = tfxy_words(n)\n"
+        "    mapping, signs = map_simple_to_irrep(lie_closure_pauli_words(words), words, n=2 * n, invol_type='BDI')\n"
+        "    assert all(list(w.wires) == sorted(w.wires) for w in mapping.values())\n"
+        "    print(sorted((plane, str(w), signs[plane]) for plane, w in mapping.items()))\n"
+    )
+    outputs = set()
+    for seed in ("0", "1", "2"):
+        result = subprocess.run(
+            [sys.executable, "-c", script], capture_output=True, text=True, check=True,
+            cwd=pathlib.Path(__file__).resolve().parents[1], env={**os.environ, "PYTHONHASHSEED": seed},
+        )
+        outputs.add(result.stdout)
+    assert len(outputs) == 1
