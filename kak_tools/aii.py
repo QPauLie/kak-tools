@@ -4,9 +4,6 @@ from scipy.linalg import eigh_tridiagonal
 from scipy.stats import unitary_group, ortho_group
 from scipy.linalg import expm, logm, inv
 from time import time
-import matplotlib.pyplot as plt
-
-np.set_printoptions(precision=3, linewidth=1200, suppress=1, threshold=sys.maxsize)
 
 # This is all following arxiv:quant-ph/0402051, modulo a few details they
 # don't specify but which seem to be important
@@ -163,6 +160,8 @@ def aii_kak(v, omega, verify=0):
 
 
 if __name__ == "__main__":
+
+    np.set_printoptions(precision=3, linewidth=1200, suppress=1, threshold=sys.maxsize)
 
     l = 3  # note: we appear to start running into numerical instability at l = 38 (that is, 76 x 76 dimensional matrices)
     # I have previously seen weird behaviour starting at 75 x 75 matrices (e.g. sharp jumps in execution time) and

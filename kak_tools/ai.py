@@ -2,8 +2,6 @@ import numpy as np
 from scipy.stats import unitary_group
 from scipy.linalg import eig
 
-np.set_printoptions(precision=3, suppress=1, linewidth=500)
-
 I = np.eye(2)
 X = np.array([[0, 1], [1, 0]])
 Y = np.array([[0, -1j], [1j, 0]])
@@ -97,6 +95,8 @@ def ai_kak(u, verify=0):
 
 
 if __name__ == "__main__":
+
+    np.set_printoptions(precision=3, suppress=1, linewidth=500)
 
     # u = expm(1j*0.32*psm('XIXY') + 1j*psm('XYYZ'))
 

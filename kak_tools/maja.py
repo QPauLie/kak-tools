@@ -1,13 +1,10 @@
 import numpy as np
 import networkx as nx
 import networkx.algorithms.isomorphism as iso
-import matplotlib.pyplot as plt
 import sys
 from time import time
 from random import sample
 from scipy.linalg import cossin, expm, logm, det
-
-np.set_printoptions(suppress=1, linewidth=1200, threshold=sys.maxsize, precision=3)
 
 I = np.eye(2)
 X = np.array([[0, 1], [1, 0]])
@@ -477,77 +474,81 @@ def pauli_mult(p, q):
     return [c, r]
 
 
-t = time()
+if __name__ == "__main__":
 
-n = 25
+    np.set_printoptions(suppress=1, linewidth=1200, threshold=sys.maxsize, precision=3)
 
-# for i in range(2*n):
-#    for j in range(i + 1, 2*n):
-#        print(i, j, pauli_mult([1, mf(i, n)], [1, mf(j, n)]))
-# exit()
+    t = time()
 
-majoranas = [mf(i, n) for i in range(2 * n)]
-maja_dict = gen_maja_pair_decomp_dict(n, majoranas)
+    n = 25
 
-# ham = ['XYI', 'XXI', 'IYX']
-# ham = list(set([ pauli_mult([1, majoranas[np.random.randint(0, n)]], [1, majoranas[np.random.randint(0, n)]])[1] for _ in range(n) ]))
-# if 'I' * n in ham:
-#    ham.remove('I' * n)
-# ham = list(maja_dict.keys())[4:7]
+    # for i in range(2*n):
+    #    for j in range(i + 1, 2*n):
+    #        print(i, j, pauli_mult([1, mf(i, n)], [1, mf(j, n)]))
+    # exit()
 
-ham = gen_hidden_horizontal(majoranas, n, n)
-
-print("Hamiltonian: ", ham)
-print("initial majoranas:")
-print(majoranas)
-print("initially " + (1 - is_horizontal(ham, maja_dict)) * "not " + "horizontal")
-
-majoranas = find_horizontal(ham, majoranas, maja_dict, verbose=0)
-
-if majoranas is not None:
+    majoranas = [mf(i, n) for i in range(2 * n)]
     maja_dict = gen_maja_pair_decomp_dict(n, majoranas)
-    print("final majoranas:")
+
+    # ham = ['XYI', 'XXI', 'IYX']
+    # ham = list(set([ pauli_mult([1, majoranas[np.random.randint(0, n)]], [1, majoranas[np.random.randint(0, n)]])[1] for _ in range(n) ]))
+    # if 'I' * n in ham:
+    #    ham.remove('I' * n)
+    # ham = list(maja_dict.keys())[4:7]
+
+    ham = gen_hidden_horizontal(majoranas, n, n)
+
+    print("Hamiltonian: ", ham)
+    print("initial majoranas:")
     print(majoranas)
-    print("afterwards, " + (1 - is_horizontal(ham, maja_dict)) * "not " + "horizontal")
+    print("initially " + (1 - is_horizontal(ham, maja_dict)) * "not " + "horizontal")
 
-exit()
+    majoranas = find_horizontal(ham, majoranas, maja_dict, verbose=0)
+
+    if majoranas is not None:
+        maja_dict = gen_maja_pair_decomp_dict(n, majoranas)
+        print("final majoranas:")
+        print(majoranas)
+        print("afterwards, " + (1 - is_horizontal(ham, maja_dict)) * "not " + "horizontal")
+
+    exit()
 
 
-# choose generator of target unitary
-# atm we specify it in terms of majoranas; would probably be better to specify in terms of pauli strings
-# atm we also take care to pick a generator that is horizontal wrt the specific choice of majoranas made in mf();
-# would be better to specify the generator and then a choice of majoranas making it horizontal is automatically sought
-# I think I can do this, but havent had time yet (additionally, the currently proposed subgraph-isomorphism
-# algorithm for this is probably slow, but probably there is an easier way)
+    # choose generator of target unitary
+    # atm we specify it in terms of majoranas; would probably be better to specify in terms of pauli strings
+    # atm we also take care to pick a generator that is horizontal wrt the specific choice of majoranas made in mf();
+    # would be better to specify the generator and then a choice of majoranas making it horizontal is automatically sought
+    # I think I can do this, but havent had time yet (additionally, the currently proposed subgraph-isomorphism
+    # algorithm for this is probably slow, but probably there is an easier way)
 
-# here we specify the generator as
-#      coeff, i, j
-# ham = [ [-3, 0, n], [1, 1, n], [1, 1, n + 1], [4, 2, n + 2] ]
-#    i.e. -3c_0c_n  +  c_1c_n  +  c_1c_{n+1}  +  4c_2c_{n+2}
-# m = sum([ x[0] * explicit_maja_rep(x[1],x[2],n) for x in ham ])
+    # here we specify the generator as
+    #      coeff, i, j
+    # ham = [ [-3, 0, n], [1, 1, n], [1, 1, n + 1], [4, 2, n + 2] ]
+    #    i.e. -3c_0c_n  +  c_1c_n  +  c_1c_{n+1}  +  4c_2c_{n+2}
+    # m = sum([ x[0] * explicit_maja_rep(x[1],x[2],n) for x in ham ])
 
-# or just get a random horizontal m
+    # or just get a random horizontal m
 
-m = np.zeros((2 * n, 2 * n))
-m[:n, n:] = np.random.random((n, n))
-m[n:, :n] = -m[:n, n:].T
+    m = np.zeros((2 * n, 2 * n))
+    m[:n, n:] = np.random.random((n, n))
+    m[n:, :n] = -m[:n, n:].T
 
-u = expm(m)
+    u = expm(m)
 
-bdi(u, n, n)
-k1, a, k2 = bdi(u, n, n)
+    bdi(u, n, n)
+    k1, a, k2 = bdi(u, n, n)
 
-assert np.allclose(u, k1 @ a @ k2)
+    assert np.allclose(u, k1 @ a @ k2)
 
-print("target m:")
-print(m)
-print("corresponding pauli:")
-print(get_str(m, n))
-print("k1")
-print(get_str(logm(k1), n))
-print("a")
-print(get_str(logm(a), n))
-print("k2")
-print(get_str(logm(k2), n))
+    print("target m:")
+    print(m)
+    print("corresponding pauli:")
+    print(get_str(m, n))
+    print("k1")
+    print(get_str(logm(k1), n))
+    print("a")
+    print(get_str(logm(a), n))
+    print("k2")
+    print(get_str(logm(k2), n))
 
-print(f"time: {time()-t:.5f}")
+    print(f"time: {time()-t:.5f}")
