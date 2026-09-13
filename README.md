@@ -6,6 +6,35 @@ with a Pauli-level BDI compilation workflow using
 Pauli/PennyLane input conversion, signed mappings to so(m) matrices and reusable
 Pauli-rotation decompositions, including odd matrix sizes and explicit BDI partitions.
 
+## What this fork changes in the upstream code
+
+Besides the PauLie bridge, the fork corrects and trims the upstream routines it
+builds on. The numerical recipes follow App. E of the paper
+([arXiv:2503.19014](https://arxiv.org/abs/2503.19014)), the Pauli mapping App. F.
+
+- `ai_kak`, `ci_kak` and `c_kak` share one pivoted real/symplectic eigenbasis
+  kernel (Lemma 14), so repeated, nearly repeated and ±1 eigenvalues no longer
+  crash them; `a_kak` diagonalizes through a Schur form and stays unitary for
+  degenerate spectra; `bd_kak` pairs Schur blocks structurally instead of by
+  position, which removes a silent split of near-π rotation blocks next to −1 axes.
+- The dense horizontal BDI splits the cosine spectrum at every resolvable gap, so
+  inputs near the resonances `t(rᵢ + rⱼ) = π` decompose instead of raising;
+  `recursive_bdi(return_all=True, first_is_horizontal=False)` returns every level.
+- The horizontal Pauli words are embedded by the rook-graph construction of App.
+  F.6 rather than a generic subgraph search: deterministic, faster, and it rejects
+  a non-generating horizontal set with a clear error. Mapped words carry their
+  wires in sorted order.
+- The transverse-field XY helpers live in `kak_tools.tfxy_model`; their so(2n)
+  signs now satisfy Eqs. F11/F14 and the irrep Hamiltonian carries the factor 2
+  of Eq. F10, so `full_workflows.minimal_workflow_tfXY` compiles `exp(+itH)`.
+- Input checks and `validate=True` raise `ValueError` (upstream used `assert`,
+  which `python -O` removes); the ten `*_kak` routines share one validation helper.
+- Dead code is gone (`symplectify`, `gram_schmidt`, the `round_*` chain, the
+  dimension-guessing `identify_algebra` family that PauLie's exact classification
+  supersedes, unreachable DIII/AIII mapping stubs); `pyproject.toml` replaces
+  `setup.py`; the package imports lazily; `ai.py`, `aii.py` and `maja.py` only run
+  their experiments as scripts.
+
 ## Installation and tests
 
 Requires Python >= 3.12 and PauLie >= 0.2.2:
@@ -156,7 +185,9 @@ time for central `a0` rates; `result.pennylane_ops(time)` returns exactly that l
   rotations while retaining central rates. `validate=True` checks the time-independent
   identity K₁AK₁ᵀ = H (reported as `reconstruction_error`) and the recomposed
   exp(time H), with tolerances scaled by |H| and |time H| respectively.
-- Numerical corrections cover CII with unequal/empty partitions and repeated or
-  endpoint angles, and DIII with degenerate eigenvalues and small rotations.
-  Factors are checked in double precision; arbitrary noisy inputs and relative
-  accuracy at arbitrarily small angles are not guaranteed.
+- The matrix-level routines handle degenerate spectra: CII with unequal or empty
+  partitions and repeated or endpoint angles, DIII with degenerate eigenvalues and
+  small rotations, AI and CI with repeated or ±1 eigenvalues, A with repeated
+  eigenvalues, and BD with near-π blocks beside −1 axes. Factors are checked in
+  double precision; arbitrary noisy inputs and relative accuracy at arbitrarily
+  small angles are not guaranteed.
