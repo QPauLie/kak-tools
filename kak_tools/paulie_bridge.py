@@ -3,8 +3,8 @@
 The pipeline classifies the DLA, independently closes its Pauli words, maps them
 onto so(m) rotation planes, and factors the horizontal Hamiltonian. Even and odd
 m, explicit BDI(p, q) partitions, and PauLie's low-rank so(m) isomorphisms are
-supported. The default balanced partition is not searched automatically: the
-Pauli basis must admit a rotation-plane bijection with all generators horizontal.
+supported. Without an explicit partition the balanced one is tried first and the
+unbalanced ones afterwards, since some generator sets are horizontal only there.
 
 Cartan rates are independent of time, including zero time and resonances.
 Other classical types are available through the matrix-level routines in
@@ -14,26 +14,28 @@ Other classical types are available through the matrix-level routines in
 from __future__ import annotations
 
 import warnings
-from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 import numpy as np
+import pennylane as qml
 from paulie.classifier.classification import Classification
-from paulie.common.algebra_basis import get_so_basis
 from pennylane.pauli import PauliWord
 from scipy.linalg import expm
 
 from ._horizontal_bdi import decompose_horizontal_hamiltonian
 from ._pauli_inputs import (
     as_pauli_collection, as_pauli_words, pauli_string_to_word,
-    pauli_word_to_string, prepare_pauli_inputs,
+    pauli_word_to_string, prepare_pauli_inputs, words_to_collection,
 )
-from ._pauli_rotations import reconstruct_from_pauli_rotations
-from ._validation import finite_real_scalar, nonnegative_tolerance, resolve_bdi_partition
-from .map_to_irrep import HorizontalEmbeddingError, _validate_so_mapping, map_simple_to_irrep
+from ._pauli_rotations import PauliRotation, reconstruct_from_pauli_rotations
+from ._validation import finite_real_scalar, nonnegative_tolerance, require, resolve_bdi_partition
+from .map_to_irrep import (
+    HorizontalEmbeddingError, _validate_so_mapping, map_irrep_to_matrices, map_simple_to_irrep,
+)
 
 __all__ = [
     "KAKResult",
+    "PauliRotation",
     "as_pauli_collection",
     "as_pauli_words",
     "dla_pauli_basis",
@@ -84,16 +86,13 @@ def _native_pauli_basis(collection, classification, strict=True):
     return [pauli_string_to_word(word) for word in native_basis]
 
 
-def labelled_matrix_basis(
-    mapping, signs, classification: Classification, validate: bool = True, n_qubits: int | None = None,
-) -> dict:
-    """Map Pauli words to signed matrices in PauLie's so(m) basis.
+def labelled_matrix_basis(mapping, signs, classification: Classification, n_qubits: int | None = None) -> dict:
+    """Map Pauli words to their signed so(m) generator matrices.
 
-    ``mapping`` and ``signs`` come from :func:`map_dla_to_irrep`. Each word gets
-    ``2 * sign * basis[k]``, matching kak_tools' generator normalization.
-    With ``validate=True``, check the complete Lie-map bijection, wire labels,
-    basis shape and rotation-plane ordering. ``n_qubits`` also bounds the wires.
-    Invalid conventions raise ValueError.
+    ``mapping`` and ``signs`` come from :func:`map_dla_to_irrep`. Each word at
+    plane ``(i, j)`` gets ``2 * sign * (E_ij - E_ji)``, kak_tools' generator
+    normalization. The complete Lie-map bijection and the wire labels are
+    checked; ``n_qubits`` also bounds the wires. Invalid conventions raise ValueError.
     """
     m = classification.get_orthogonal_size()
     if m is None:
@@ -101,129 +100,122 @@ def labelled_matrix_basis(
             f"labelled_matrix_basis needs an so(m) presentation; PauLie classified this "
             f"DLA as {classification.get_algebra()}."
         )
-    # Match get_so_basis's upper-triangle ordering.
-    index = {node: k for k, node in enumerate(zip(*np.triu_indices(m, k=1)))}
-
-    if validate:
-        signs = _validate_so_mapping(mapping, signs, m)
-        as_pauli_words(mapping.values(), n_qubits=n_qubits)
-
-    basis = get_so_basis(m)
-    if validate:
-        if basis.shape != (len(index), m, m):
-            raise ValueError(
-                f"PauLie's basis has shape {basis.shape}, expected {(len(index), m, m)}."
-            )
-        for node, k in index.items():
-            if not np.isclose(basis[k][node], 1.0):
-                raise ValueError(
-                    f"PauLie's so({m}) basis element {k} does not generate the rotation "
-                    f"in plane {node}; the basis orderings have drifted apart."
-                )
-
-    return {
-        word: 2.0 * signs[node] * basis[index[node]].real
-        for node, word in mapping.items()
-    }
+    signs = _validate_so_mapping(mapping, signs, m)
+    as_pauli_words(mapping.values(), n_qubits=n_qubits)
+    return map_irrep_to_matrices(mapping, signs, m, "BDI")
 
 
-#: The only involution kak_tools can build a Pauli-word irrep mapping for.
-PAULI_LEVEL_INVOLUTION = "BDI"
-
-
-def _resolve_orthogonal(classification: Classification, involution: str | None) -> tuple[int, str]:
-    """Resolve the so(m) size and BDI involution, rejecting unsupported algebras."""
-    involution = involution or PAULI_LEVEL_INVOLUTION
-    if involution != PAULI_LEVEL_INVOLUTION:
-        raise NotImplementedError(
-            f"kak_tools can only build a Pauli-word irrep mapping for the "
-            f"{PAULI_LEVEL_INVOLUTION} involution, not {involution!r}."
-        )
-
+def _orthogonal_size(basis, classification: Classification) -> int:
+    """Return the m with m(m-1)/2 Pauli words in the closure, rejecting other algebras."""
     size = classification.get_orthogonal_size()
     if size is None:
         raise NotImplementedError(
-            f"PauLie classified this DLA as {classification.get_algebra()}, which is not (isomorphic to) "
-            "a single so(m). kak_tools can only build a Pauli-word irrep mapping for "
-            "so(m) with a BDI involution. Split the algebra into its components with "
-            "`kak_tools.split_pauli_algebra` and decompose them separately, or use the "
-            "matrix-level routines in `kak_tools.numerical_decompositions` directly."
+            f"PauLie classified this DLA as {classification.get_algebra()} with summands "
+            f"{classification.get_subalgebras()}, which is not (isomorphic to) a single so(m); "
+            "kak_tools can only build a Pauli-word irrep mapping for so(m) with a BDI "
+            "involution. Compute the closure with `kak_tools.dla_pauli_basis(generators)`, "
+            "split it with `kak_tools.split_pauli_algebra`, and choose horizontal generators "
+            "within each component, or use the matrix-level routines in "
+            "`kak_tools.numerical_decompositions` directly."
         )
-    return size, involution
+    # The closure already matched PauLie's dimension; the rotation planes must
+    # match it too before words are paired with them.
+    require(
+        size * (size - 1) // 2 == len(basis),
+        f"so({size}) has {size * (size - 1) // 2} rotation planes but the Lie closure "
+        f"has {len(basis)} Pauli words.",
+    )
+    return size
 
 
-def map_dla_to_irrep(
-    generators,
-    dla: Sequence[PauliWord] | None = None,
-    n_qubits: int | None = None,
-    involution: str | None = None,
-    invol_kwargs: dict | None = None,
-):
+def _irrep_mapping(words, n_qubits, invol_kwargs):
+    """Classify, close and map normalized words onto signed BDI rotation planes.
+
+    Returns ``(classification, irrep_size, partition, mapping, signs)``. The
+    closure is verified against PauLie's dimension before the so(m) size is read
+    off it, so a misclassified dimension is reported as such. Without
+    ``invol_kwargs`` the balanced partition is tried first (it is
+    parameter-optimal) and every other ``p < m // 2`` afterwards, since a
+    generator set may be horizontal only for an unbalanced BDI(p, q);
+    complementary partitions are equivalent.
+    """
+    collection = words_to_collection(words, n_qubits)
+    classification = collection.get_class()
+    basis = _native_pauli_basis(collection, classification)
+    irrep_size = _orthogonal_size(basis, classification)
+    if invol_kwargs is None:
+        half = irrep_size // 2
+        partitions = [(p, irrep_size - p) for p in [half, *range(1, half)]]
+    else:
+        partitions = [resolve_bdi_partition(irrep_size, invol_kwargs)]
+
+    for p, q in partitions:
+        try:
+            mapping, signs = map_simple_to_irrep(
+                basis, horizontal_ops=words, n=irrep_size,
+                invol_type="BDI", invol_kwargs={"p": p, "q": q},
+            )
+        except HorizontalEmbeddingError as exc:
+            failure = exc
+            continue
+        return classification, irrep_size, (p, q), mapping, signs
+
+    if invol_kwargs is None:
+        message = (
+            f"The Pauli generators cannot all be embedded in the horizontal subspace of "
+            f"BDI(p, q) for any partition p + q = {irrep_size}: the DLA's Pauli words admit "
+            f"no so({irrep_size}) rotation-plane presentation with these generators "
+            "horizontal. Supply a compatible generator set."
+        )
+    else:
+        message = (
+            f"The Pauli generators cannot all be embedded in the horizontal subspace of "
+            f"BDI({p}, {q}). Supply a compatible generator set or partition, or omit "
+            "invol_kwargs to search the partitions."
+        )
+    raise ValueError(message) from failure
+
+
+def map_dla_to_irrep(generators, n_qubits: int | None = None, invol_kwargs: dict | None = None):
     """Return ``(mapping, signs, classification)`` using PauLie's native result.
 
-    Generators must be horizontal for the selected BDI partition. ``dla`` may
-    supply the complete distinct PauliWord basis; otherwise closure is computed.
-    Register width is inferred from the generators unless ``n_qubits`` is supplied.
+    The generators must be horizontal for the BDI partition, which is searched
+    when ``invol_kwargs`` is omitted (see :func:`kak_decomposition`). Register
+    width is inferred from the generators unless ``n_qubits`` is supplied.
     """
-    inputs = prepare_pauli_inputs(generators, n_qubits)
-    collection = inputs.collection()
-    classification = collection.get_class()
-    irrep_size, involution = _resolve_orthogonal(classification, involution)
-    p, q = resolve_bdi_partition(irrep_size, invol_kwargs)
-    if dla is None:
-        dla = _native_pauli_basis(collection, classification)
-    else:
-        dla = list(dla)
-        if (len(dla) != classification.get_dla_dim() or not all(isinstance(word, PauliWord) for word in dla)
-                or len(set(dla)) != len(dla)):
-            raise ValueError(f"The supplied DLA basis must contain {classification.get_dla_dim()} distinct PauliWords.")
-        # Apply the same register checks to supplied basis elements as to generators.
-        as_pauli_words(dla, inputs.n_qubits)
-        if not set(inputs.words).issubset(dla):
-            raise ValueError("The supplied DLA basis does not contain all generators.")
-    mapping, signs = _map_verified_basis(inputs.words, dla, irrep_size, involution, p, q)
+    words, _, n_qubits = prepare_pauli_inputs(generators, n_qubits=n_qubits)
+    classification, _, _, mapping, signs = _irrep_mapping(words, n_qubits, invol_kwargs)
     return mapping, signs, classification
-
-
-def _map_verified_basis(words, basis, irrep_size, involution, p, q):
-    """Map already normalized data without re-entering public conversion APIs."""
-    try:
-        mapping, signs = map_simple_to_irrep(
-            list(basis), horizontal_ops=words, n=irrep_size,
-            invol_type=involution, invol_kwargs={"p": p, "q": q},
-        )
-    except HorizontalEmbeddingError as exc:
-        raise ValueError(
-            f"The Pauli generators cannot all be embedded in the horizontal "
-            f"subspace of BDI({p}, {q}). Supply a compatible generator set or partition."
-        ) from exc
-    if set(mapping.values()) != set(basis):
-        raise ValueError("The supplied DLA basis does not match the completed irrep mapping.")
-    return mapping, signs
 
 
 @dataclass
 class KAKResult:
     """Compiled Pauli-word KAK decomposition and its defining irrep.
 
+    ``pauli_rotations`` lists the factors of the left-to-right matrix product
+    ``U = R_1 R_2 ... R_N = K1 A K2`` with ``R_k = exp(i * c_k * P_k)``; the
+    physical convention is ``exp(+i * time * H)``. The ``PauliRotation(word,
+    coefficient, kind)`` records of kind ``k1``/``k2`` are vertical rotations and
+    those of kind ``a0`` carry the time-independent Cartan rates, the only
+    coefficients to multiply by the evolution time. A circuit applies the gates
+    in reversed list order, each as ``qml.PauliRot(-2 * c_k, P_k)``; see
+    :meth:`pennylane_ops`.
+
     ``classification`` is PauLie's native Classification; ``n_qubits`` records
-    the physical register independently of its irreducible representation.
-
-    ``pauli_rotations`` contains ``PauliRotation(word, coefficient, kind)`` records:
-    ``k1``/``k2`` are vertical rotations; ``a0`` are Cartan rates, the only
-    coefficients that are scaled by the evolution time.
-
-    ``mapping`` and ``signs`` relate irrep planes to Pauli words; ``algebra_basis``
-    contains their signed matrices. ``unitary_irrep = expm(time * hamiltonian_irrep)``.
-    ``reconstruction_error`` is the max-abs Pauli-rotation reconstruction error,
-    or None when validation was disabled.
+    the physical register independently of its irreducible representation and
+    ``partition`` the BDI(p, q) sizes used. ``mapping`` and ``signs`` relate irrep
+    planes to Pauli words; ``algebra_basis`` contains their signed matrices.
+    ``hamiltonian_irrep`` is H in that basis and ``unitary_irrep = expm(time * H)``.
+    ``reconstruction_error`` is the time-independent Lie-algebra error
+    ``max|K1 A K1^T - H|`` of the compiled rotations, or None when validation
+    was disabled.
     """
 
     classification: Classification
     n_qubits: int
-    involution: str
     irrep_size: int
-    pauli_rotations: list
+    partition: tuple[int, int]
+    pauli_rotations: list[PauliRotation]
     time: float
     hamiltonian_irrep: np.ndarray
     unitary_irrep: np.ndarray
@@ -244,13 +236,65 @@ class KAKResult:
             time=self.time if time is None else time,
         )
 
+    def pennylane_ops(self, time: float | None = None) -> list:
+        """PennyLane gates whose circuit is ``exp(i * time * H)`` on the physical register.
+
+        The rotations are emitted in reversed list order as ``PauliRot(-2 * c)``,
+        with ``a0`` rates multiplied by ``time`` (default: the compile time). A
+        rotation with the identity word becomes a ``GlobalPhase``.
+        """
+        time = self.time if time is None else finite_real_scalar(time, "time")
+        ops = []
+        for word, coefficient, kind in reversed(self.pauli_rotations):
+            angle = coefficient * (time if kind == "a0" else 1.0)
+            if len(word) == 0:
+                ops.append(qml.GlobalPhase(-angle))
+            else:
+                ops.append(qml.PauliRot(-2 * angle, "".join(word[w] for w in word.wires), wires=word.wires))
+        return ops
+
     def __repr__(self) -> str:  # pragma: no cover - cosmetic
         err = "not validated" if self.reconstruction_error is None else f"{self.reconstruction_error:.2e}"
         return (
-            f"KAKResult(algebra={self.classification.get_algebra()}, involution={self.involution}, "
-            f"n={self.irrep_size}, rotations={len(self.pauli_rotations)}, "
+            f"KAKResult(algebra={self.classification.get_algebra()}, "
+            f"BDI{self.partition}, n={self.irrep_size}, rotations={len(self.pauli_rotations)}, "
             f"reconstruction_error={err})"
         )
+
+
+def _validate_rotations(pauli_rotations, algebra_basis, irrep_size, hamiltonian, unitary, time, atol):
+    """Check ``K1 A K1^T == H`` and then the recomposed ``exp(time * H)``; return the first error.
+
+    The ``k2`` sequence inverts ``k1`` by construction, so a group-level
+    comparison alone is vacuous at zero time and blind to rate errors that are
+    multiples of ``2 pi / time``. Both comparisons carry rounding of order
+    ``eps`` times the magnitude of what is exponentiated, hence the scaled
+    tolerances: a fixed one rejects correct compilations once ``|time * H|``
+    reaches about ``atol / eps``.
+    """
+    k1 = reconstruct_from_pauli_rotations(
+        [rotation for rotation in pauli_rotations if rotation[2] == "k1"], algebra_basis, irrep_size
+    )
+    cartan = np.zeros((irrep_size, irrep_size))
+    for word, rate, kind in pauli_rotations:
+        if kind == "a0":
+            cartan = cartan + rate * algebra_basis[word]
+    scale = max(1.0, float(np.abs(hamiltonian).max()))
+    error = float(np.abs(k1 @ cartan @ k1.T - hamiltonian).max())
+    require(
+        np.isfinite(error) and error <= atol * scale,
+        f"The Pauli rotations do not recompose H: max |K1 A K1^T - H| = {error:.3e} > {atol * scale:.1e}.",
+    )
+
+    recomposed = reconstruct_from_pauli_rotations(pauli_rotations, algebra_basis, irrep_size, time=time)
+    group_error = float(np.abs(recomposed - unitary).max())
+    group_atol = atol * max(1.0, abs(time) * scale)
+    require(
+        np.isfinite(group_error) and group_error <= group_atol,
+        f"The Pauli rotations do not recompose exp({time} * H): max error "
+        f"{group_error:.3e} > {group_atol:.1e}.",
+    )
+    return error
 
 
 def kak_decomposition(
@@ -258,7 +302,6 @@ def kak_decomposition(
     coefficients=None,
     time: float = 1.0,
     n_qubits: int | None = None,
-    involution: str | None = None,
     invol_kwargs: dict | None = None,
     validate: bool = True,
     atol: float | None = None,
@@ -266,49 +309,50 @@ def kak_decomposition(
 ) -> KAKResult:
     """Compile ``exp(time * H)`` into Pauli rotations using PauLie's classification.
 
-    Generators accepted by :func:`as_pauli_words` must be individual horizontal Pauli
-    terms. ``coefficients`` supplies one finite real weight per input term before
-    deduplication, multiplying intrinsic PennyLane coefficients; duplicates are summed.
-    The default weights are one. Generator sums are rejected.
+    Generators accepted by :func:`as_pauli_words` must be individual Pauli terms;
+    sums are rejected. Every listed generator belongs to the generator family,
+    whatever its weight: intrinsic PennyLane factors and the external
+    ``coefficients`` (one finite real per input term, default one) only shape
+    ``H = sum(factor * coefficient * P)``, with duplicate words summed. A zero
+    weight therefore keeps its term in the family, so ``[X, Y, 0 * Z]`` and
+    ``([X, Y, Z], [1, 1, 0])`` both compile within the algebra generated by X, Y
+    and Z. ``n_qubits`` is inferred when omitted; an Identity factor on a term
+    also widens the register.
 
-    ``n_qubits`` is inferred when omitted. Only BDI on an so(m) presentation is
-    supported; ``invol_kwargs`` may specify its p/q partition. The horizontal
-    Hamiltonian determines time-independent Cartan rates, reusable via the result's
-    ``reconstruct(time=...)`` method.
+    Only BDI on an so(m) presentation is supported. ``invol_kwargs`` fixes the
+    p/q partition; otherwise the balanced partition is tried first and the other
+    ``p < m // 2`` afterwards, and the result records the ``partition`` used. The
+    horizontal Hamiltonian determines time-independent Cartan rates, reusable via
+    the result's ``reconstruct(time=...)`` and ``pennylane_ops(time=...)``.
 
-    ``validate`` checks the Pauli-rotation reconstruction against the matrix
-    exponential. ``atol`` defaults to ``1e-10 * irrep_size**2`` for accumulated Givens
-    error. ``tol`` optionally drops small vertical angles; central rates are always
-    retained so longer evolution times remain valid. Both tolerances must be
-    nonnegative and finite when supplied.
+    ``validate`` checks the compiled rotations at the Lie-algebra level,
+    ``max|K1 A K1^T - H| <= atol * max(1, |H|)``, which is independent of time
+    and hence meaningful at zero time and at resonances, and additionally the
+    recomposed group element against ``expm(time * H)`` with the tolerance scaled
+    by ``max(1, |time * H|)``. ``atol`` defaults to ``1e-10 * irrep_size**2`` for
+    accumulated Givens error. ``tol`` optionally drops small vertical angles, an
+    approximation that validation measures; central rates are always retained so
+    longer evolution times remain valid. Both tolerances must be nonnegative and
+    finite when supplied.
 
-    Raises ValueError for invalid inputs or failed reconstruction, and
-    NotImplementedError for unsupported algebras or involutions.
+    Raises ValueError for invalid inputs or failed validation, and
+    NotImplementedError for unsupported algebras.
     """
-    inputs = prepare_pauli_inputs(generators, n_qubits)
     time = finite_real_scalar(time, "time")
     tol = nonnegative_tolerance(tol, "tol")
     atol = nonnegative_tolerance(atol, "atol")
-    words, coefficients = inputs.hamiltonian_terms(coefficients)
-    collection = inputs.collection()
-    classification = collection.get_class()
-    irrep_size, involution = _resolve_orthogonal(classification, involution)
-    p, q = resolve_bdi_partition(irrep_size, invol_kwargs)
-    basis = _native_pauli_basis(collection, classification)
-    mapping, signs = _map_verified_basis(words, basis, irrep_size, involution, p, q)
+    words, coefficients, n_qubits = prepare_pauli_inputs(generators, coefficients, n_qubits)
+    classification, irrep_size, partition, mapping, signs = _irrep_mapping(words, n_qubits, invol_kwargs)
 
-    # Label PauLie's orthogonal presentation with the verified Pauli words.
-    algebra_basis = labelled_matrix_basis(mapping, signs, classification, n_qubits=inputs.n_qubits)
+    algebra_basis = labelled_matrix_basis(mapping, signs, classification, n_qubits=n_qubits)
     hamiltonian = np.zeros((irrep_size, irrep_size))
-    for coeff, word in zip(coefficients, words):
+    for coeff, word in zip(coefficients, words, strict=True):
         hamiltonian = hamiltonian + coeff * algebra_basis[word]
 
-    with np.errstate(over="ignore", invalid="ignore"):
-        scaled_hamiltonian = time * hamiltonian
-    if not np.isfinite(scaled_hamiltonian).all():
-        raise ValueError("The time-scaled Hamiltonian must contain finite values.")
-    unitary = expm(scaled_hamiltonian)
-    pauli_rotations = decompose_horizontal_hamiltonian(hamiltonian, p, mapping, signs, time=time, tol=tol)
+    pauli_rotations = decompose_horizontal_hamiltonian(
+        hamiltonian, partition[0], mapping, signs, time=time, tol=tol
+    )
+    unitary = expm(time * hamiltonian)
 
     if atol is None:
         # Givens factorization uses O(irrep_size**2) rotations; allow for their
@@ -317,21 +361,15 @@ def kak_decomposition(
 
     error = None
     if validate:
-        recomposed = reconstruct_from_pauli_rotations(
-            pauli_rotations, algebra_basis, irrep_size, time=time
+        error = _validate_rotations(
+            pauli_rotations, algebra_basis, irrep_size, hamiltonian, unitary, time, atol
         )
-        error = float(np.abs(recomposed - unitary).max())
-        if not np.isfinite(error) or error > atol:
-            raise ValueError(
-                f"The Pauli rotations do not recompose exp({time} * H): max error "
-                f"{error:.3e} > {atol:.1e}."
-            )
 
     return KAKResult(
         classification=classification,
-        n_qubits=inputs.n_qubits,
-        involution=involution,
+        n_qubits=n_qubits,
         irrep_size=irrep_size,
+        partition=partition,
         pauli_rotations=pauli_rotations,
         time=time,
         hamiltonian_irrep=hamiltonian,

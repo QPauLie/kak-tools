@@ -41,9 +41,11 @@ result = kak_decomposition(generators, [1.0, 0.7, -0.3, 0.5], time=0.83)
 
 print(classification.get_algebra(), classification.get_dla_dim())
 print(result.classification.get_orthogonal_size(), result.n_qubits)
-result.pauli_rotations    # (PauliWord, coefficient, kind) triples
+result.pauli_rotations    # PauliRotation(word, coefficient, kind) records
 result.cartan_angles      # (PauliWord, rate) pairs, independent of time
+result.partition          # the BDI(p, q) sizes that were used
 result.reconstruct(4.2)   # reuse the compilation at another time
+result.pennylane_ops(4.2) # qml.PauliRot gates in circuit order
 ```
 
 For an already complete generator list, omit `n` in `get_pauli_string`:
@@ -57,15 +59,17 @@ The example in `notebooks/paulie_bridge_example.py` uses PauLie's native
 | `Classification.is_simple()`, `.get_simple_component()` | Test simplicity and retrieve the unique simple summand |
 | `Classification.get_orthogonal_size()` | Find an isomorphic so(m) presentation, or return `None` |
 | `Classification.get_algebra_basis()` | Basis in PauLie's classified presentation |
-| `paulie.common.algebra_basis.get_so_basis(m)` | Basis in the chosen so(m) presentation |
 | `dla_pauli_basis` | Complete native Pauli closure, converted to PennyLane words |
-| `map_dla_to_irrep` | Return `(mapping, signs, classification)` for signed rotation planes |
-| `labelled_matrix_basis(mapping, signs, classification, n_qubits=...)` | Label PauLie's orthogonal matrices with verified Pauli words |
+| `map_dla_to_irrep(generators, n_qubits=..., invol_kwargs=...)` | Return `(mapping, signs, classification)` for signed rotation planes |
+| `labelled_matrix_basis(mapping, signs, classification, n_qubits=...)` | Verified signed so(m) generator matrices `2 * sign * (E_ij - E_ji)` per Pauli word |
+| `kak_decomposition`, `KAKResult`, `PauliRotation` | Compile `exp(time * H)` into typed Pauli rotations |
+| `reconstruct_from_pauli_rotations` | Recompose a matrix from ordered rotations |
 | `pauli_string_to_word`, `pauli_word_to_string` | Convert between PauLie and PennyLane |
 
-For `2*so(3)`, the classified basis uses 6×6 matrices, while `get_so_basis(4)` uses
-4×4 matrices. Dimension alone is insufficient: so(7) and sp(3) both have dimension 21.
-`get_simple_component()` raises PauLie's `ClassificationException` for nonsimple algebras.
+For `2*so(3)`, the classified basis uses 6×6 matrices, while the bridge works in the
+4×4 so(4) presentation. Dimension alone is insufficient: so(7) and sp(3) both have
+dimension 21. `get_simple_component()` raises PauLie's `ClassificationException` for
+nonsimple algebras.
 
 ### Inputs and conventions
 
@@ -79,28 +83,35 @@ real scalars; numeric complex scalars with zero imaginary part are accepted.
 For mixed or PennyLane inputs, `as_pauli_collection(generators).get_class()`
 returns the native PauLie classification after input normalization.
 
-The physical convention is **exp(+it ΣcP)**. A PennyLane `PauliRot` takes
-`-2 * coefficient`, additionally multiplied by time for central `a0` rates.
+The physical convention is **exp(+it ΣcP)**. `result.pauli_rotations` lists the
+factors of the left-to-right matrix product U = R₁ R₂ … R_N with R_k = exp(+i c_k P_k),
+which is what `reconstruct` multiplies out. A circuit applies the gates in **reversed**
+list order, each as `qml.PauliRot(-2 * c_k, P_k)` with `c_k` additionally multiplied by
+time for central `a0` rates; `result.pennylane_ops(time)` returns exactly that list.
 
 ### Algorithm and scope
 
 - The Pauli workflow requires a compatible so(m) basis and horizontal generators
   for BDI(p,q). Even and odd m work. Supplying only `p` or `q` in `invol_kwargs`
-  infers the complement; both sizes must be positive and sum to m. The default
-  partition is balanced; alternatives are not searched automatically.
+  infers the complement; both sizes must be positive and sum to m. Without
+  `invol_kwargs` the balanced partition is tried first and the unbalanced ones next,
+  since some generator sets are horizontal only there; `result.partition` records
+  the choice.
 - Abstract isomorphism with so(m) does not guarantee a signed bijection between
   individual Pauli words and rotation planes. Independent su(2) factors on separate
   qubits may require compilation component by component.
-- Zero separate coefficients retain the generator algebra. Intrinsically zero
-  PennyLane operators have no Pauli support and are omitted.
+- Every listed generator belongs to the generator family, whatever its weight;
+  intrinsic PennyLane factors and separate coefficients only shape the Hamiltonian.
+  Widen the register with `n_qubits` or an Identity factor on a term.
 - The bridge computes the full native closure before checking its classified
   dimension. `dla_pauli_basis(..., strict=False)` warns on a dimension mismatch.
 - A complete, distinct Pauli basis and its star commutators certify the signed
   mapping. A signed SVD factors H=KAKᵀ; the right gate list is the exact inverse of
   the left, preserving the physical lift. Central rates remain unwrapped at all times.
 - No rotations are discarded by default. Explicit `tol` drops small vertical
-  rotations while retaining central rates. `validate=True` checks reconstruction;
-  floating-point errors can accumulate at very large times.
+  rotations while retaining central rates. `validate=True` checks the time-independent
+  identity K₁AK₁ᵀ = H (reported as `reconstruction_error`) and the recomposed
+  exp(time H), with tolerances scaled by |H| and |time H| respectively.
 - Numerical corrections cover CII with unequal/empty partitions and repeated or
   endpoint angles, and DIII with degenerate eigenvalues and small rotations.
   Factors are checked in double precision; arbitrary noisy inputs and relative

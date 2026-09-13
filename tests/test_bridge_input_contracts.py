@@ -27,7 +27,7 @@ def test_pauli_string_conversion_preserves_positions_and_roundtrips(text, expect
 @pytest.mark.parametrize("endians, collection", [(["big", "big"], False), (["little", "big"], True)])
 def test_native_bit_endianness_and_container_do_not_change_the_closure(endians, collection):
     native = [PauliString(bits=pauliebits(bits, endian=endian))
-              for bits, endian in zip(["10", "01"], endians)]
+              for bits, endian in zip(["10", "01"], endians, strict=True)]
     inputs = PauliStringCollection(native) if collection else native
     assert as_pauli_collection(inputs).get_class().get_dla_dim() == 3
     assert set(dla_pauli_basis(inputs)) == set(as_pauli_words(["X", "Y", "Z"]))
@@ -36,9 +36,9 @@ def test_native_bit_endianness_and_container_do_not_change_the_closure(endians, 
 @pytest.mark.parametrize("generators, width", [
     (["XII", "YII"], 3),
     ([qml.X(0) @ qml.I(5), qml.Y(0) @ qml.I(5)], 6),
-    ([qml.X(0), qml.Y(0), 0 * qml.I(7)], 8),
+    ([qml.X(0), qml.Y(0), qml.X(0) @ qml.I(7)], 8),
 ])
-def test_register_width_survives_padding_identity_and_intrinsic_zero_terms(generators, width):
+def test_register_width_survives_padding_identity_and_duplicate_terms(generators, width):
     result = kak_decomposition(iter(generators))
     assert result.n_qubits == as_pauli_collection(generators).get_len() == width
     assert as_pauli_collection(generators, n_qubits=width + 1).get_len() == width + 1
@@ -67,7 +67,7 @@ def test_single_string_and_one_shot_iterators_are_not_split_or_consumed():
 @pytest.mark.parametrize("generators, message", [
     ([], "At least one"), (PauliStringCollection([]), "At least one"),
     ([qml.X(0) + qml.Y(0)], "single Pauli term"), (["AB"], "Pauli strings"), ([""], "Pauli strings"),
-    ([0 * qml.Z(0)], "nonzero"), ([1j * qml.X(0)], "finite real scalar"),
+    ([1j * qml.X(0)], "finite real scalar"),
 ])
 def test_invalid_generator_inputs_raise_clear_errors(generators, message):
     with pytest.raises(ValueError, match=message):
@@ -113,22 +113,22 @@ def test_classification_and_native_closure_are_independent_of_dimension_guessing
     assert {(kind, size) for _, kind, size in identify_algebra(basis)} == {("so", 7), ("sp", 3)}
 
 
-def test_unsupported_algebra_and_involution_are_explicit():
-    assert get_pauli_string(["X", "I"]).get_class().get_orthogonal_size() is None
-    with pytest.raises(NotImplementedError, match=r"not \(isomorphic to\)"):
-        kak_decomposition(["X", "I"])
-    with pytest.raises(NotImplementedError, match="involution"):
-        kak_decomposition(["X", "Y"], involution="DIII")
+@pytest.mark.parametrize("generators", [["X", "I"], ["XX", "YY", "ZZ", "XI", "IX"]])
+def test_unsupported_algebras_name_their_summands_and_the_closure_helper(generators):
+    classification = get_pauli_string(generators).get_class()
+    assert classification.get_orthogonal_size() is None
+    with pytest.raises(NotImplementedError, match=r"not \(isomorphic to\).*dla_pauli_basis") as info:
+        kak_decomposition(generators)
+    assert all(summand in str(info.value) for summand in classification.get_subalgebras())
 
 
-@pytest.mark.parametrize("basis, convert", [
-    (["XI", "YI"], True), (["XI", "YI", "XI"], True),
-    (["IX", "IY", "IZ"], True), (["XI", "YI", "ZI"], False),
-])
-def test_supplied_basis_must_be_complete_distinct_and_contain_the_generators(basis, convert):
-    words = list(map(pauli_string_to_word, basis)) if convert else basis
-    with pytest.raises(ValueError, match="supplied DLA basis"):
-        map_dla_to_irrep(["XI", "YI"], dla=words)
+def test_misclassified_dimension_is_reported_before_the_algebra_type(monkeypatch):
+    # PauLie says 2*u(1) (dimension 2, no so(m) presentation) for a closure of 6 words.
+    wrong = get_pauli_string(["X", "I"]).get_class()
+    monkeypatch.setattr(PauliStringCollection, "get_class", lambda self: wrong)
+    for call in [kak_decomposition, map_dla_to_irrep]:
+        with pytest.raises(ValueError, match="closure produced 6"):
+            call(["XI", "ZI", "XX"])
 
 
 def test_mutated_native_classification_cannot_truncate_the_closure():

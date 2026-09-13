@@ -5,9 +5,9 @@ The physical convention is exp(+i t H).
 """
 
 import numpy as np
+import pennylane as qml
 from scipy.linalg import expm
 from paulie import get_pauli_string
-from paulie.common.algebra_basis import get_so_basis
 from paulie.common.pauli_string_factory import get_all_k_local
 
 from kak_tools import kak_decomposition, pauli_string_to_word
@@ -26,23 +26,24 @@ print("Dimension:", classification.get_dla_dim())
 print("Summands:", classification.get_subalgebras())
 if classification.is_simple():
     print("Simple component:", classification.get_simple_component())
-m = classification.get_orthogonal_size()
 print("Classified basis:", classification.get_algebra_basis().shape)
-print("Orthogonal basis:", get_so_basis(m).shape)
+print("Orthogonal size:", classification.get_orthogonal_size())
 
 coefficients = np.random.default_rng(20250805).normal(size=len(generators))
 coefficients /= np.linalg.norm(coefficients)
 result = kak_decomposition(generators, coefficients, time=0.83)
-print("Physical qubits / irrep size:", result.n_qubits, result.irrep_size)
+print("Physical qubits / irrep size / partition:", result.n_qubits, result.irrep_size, result.partition)
 print("Native classification:", result.classification.get_algebra())
 print("Rotations / central rates:", len(result.pauli_rotations), len(result.cartan_angles))
 print("Irrep reconstruction error:", result.reconstruction_error)
 
 # Independently check exp(+i t H) on the physical qubits, including reused times.
+# pauli_rotations lists the matrix product left to right; a circuit applies the
+# gates in reversed order, which pennylane_ops does.
 wire_order = list(range(n_qubits))
 hamiltonian = sum(
     coefficient * pauli_string_to_word(word).to_mat(wire_order=wire_order)
-    for word, coefficient in zip(generators, coefficients)
+    for word, coefficient in zip(generators, coefficients, strict=True)
 )
 for time in [0.0, -0.1, 0.83, 4.2]:
     physical = np.eye(2**n_qubits, dtype=complex)
@@ -52,6 +53,8 @@ for time in [0.0, -0.1, 0.83, 4.2]:
     expected = expm(1j * time * hamiltonian)
     error = np.max(np.abs(physical - expected))
     np.testing.assert_allclose(physical, expected, rtol=0, atol=1e-8)
+    circuit = qml.matrix(qml.tape.QuantumScript(result.pennylane_ops(time)), wire_order=wire_order)
+    np.testing.assert_allclose(circuit, expected, rtol=0, atol=1e-8)
     np.testing.assert_allclose(
         result.reconstruct(time), expm(time * result.hamiltonian_irrep), rtol=0, atol=1e-8
     )
