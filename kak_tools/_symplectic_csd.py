@@ -26,6 +26,35 @@ def _project_complement(vectors, chosen):
     return residual
 
 
+def _pivoted_columns(candidates, count, partner=None):
+    """Choose ``count`` orthonormal vectors from the candidate columns by global pivoting.
+
+    Each choice is the largest remaining residual, reorthogonalized against the
+    full basis and completed by ``partner(vector)`` when given; all candidate
+    residuals are then updated only against the new pair to keep cubic cost.
+    Pivoting on the largest residual means that a candidate which is mostly
+    roundoff, such as the imaginary part of a nearly real eigenvector, is never
+    normalized into the basis while an independent direction remains. Returns
+    the pivot column indices and the chosen unit vectors.
+    """
+    tolerance = 64 * np.finfo(float).eps * max(1, len(candidates))
+    chosen, indices, vectors = [], [], []
+    residuals = candidates.copy()
+    for _ in range(count):
+        lengths = np.linalg.norm(residuals, axis=0)
+        pivot = int(np.argmax(lengths))
+        if not lengths[pivot] > tolerance:
+            raise ValueError("The candidate vectors do not span enough independent directions.")
+        vector = _project_complement(residuals[:, pivot], chosen)
+        vector /= np.linalg.norm(vector)
+        pair = [vector] if partner is None else [vector, partner(vector)]
+        indices.append(pivot)
+        vectors.append(vector)
+        chosen.extend(pair)
+        residuals = _project_complement(residuals, pair)
+    return indices, vectors
+
+
 def _paired_right_basis(candidates):
     """Choose a fixed number of symplectic pairs by global column pivoting.
 
@@ -34,19 +63,7 @@ def _paired_right_basis(candidates):
     residual norms sum to 2(p-k). The largest remaining norm is therefore at
     least sqrt((p-k)/p); no angle-gap or multiplicity threshold is needed.
     """
-    chosen, first_columns = [], []
-    residuals = candidates.copy()
-    for _ in range(len(candidates) // 2):
-        lengths = np.linalg.norm(residuals, axis=0)
-        pivot = int(np.argmax(lengths))
-        # Reorthogonalize the pivot against the full basis, while updating all
-        # candidate residuals only against the new pair to keep cubic cost.
-        vector = _project_complement(residuals[:, pivot], chosen)
-        vector /= np.linalg.norm(vector)
-        pair = (vector, _partner(vector))
-        first_columns.append(vector)
-        chosen.extend(pair)
-        residuals = _project_complement(residuals, pair)
+    _, first_columns = _pivoted_columns(candidates, len(candidates) // 2, _partner)
     return np.stack(first_columns, axis=1)
 
 
