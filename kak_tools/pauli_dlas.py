@@ -2,16 +2,12 @@
 
 import copy
 import warnings
-from collections.abc import Iterable
 from itertools import combinations, product
 import networkx as nx
 
-import numpy as np
 import pennylane as qml
 
-
-def is_int(x):
-    return np.isclose(x % 1, 0)
+from ._validation import require
 
 
 def anticom_graph_pauli(paulis):
@@ -24,7 +20,7 @@ def anticom_graph_pauli(paulis):
         networkx.Graph: The anticommutation graph, which is an undirected, unweighted
         graph.
     """
-    assert all(isinstance(p, qml.pauli.PauliWord) for p in paulis)
+    require(all(isinstance(p, qml.pauli.PauliWord) for p in paulis), "paulis must contain PauliWords.")
     graph = nx.Graph()
     graph.add_nodes_from(paulis)
     graph.add_edges_from(
@@ -49,7 +45,7 @@ def split_pauli_algebra(dla, verbose=False):
         words that make up a connected component of the anticommutation graph of ``dla``.
 
     """
-    assert all(isinstance(op, qml.pauli.PauliWord) for op in dla)
+    require(all(isinstance(op, qml.pauli.PauliWord) for op in dla), "dla must contain PauliWords.")
     # Create fully disconnected graph with Pauli words as nodes
     graph = anticom_graph_pauli(dla)
     # Get connected components of the graph. The components are given as collections of nodes
@@ -63,127 +59,6 @@ def split_pauli_algebra(dla, verbose=False):
         print(f"Found {num_comps} component{plural} with dimension{plural} {dims}.")
 
     return comps
-
-
-def get_simple_dim(dla_type, dim):
-    """Compute the candidate n for which the algebra of type ``dla_type`` has dimension ``dim``.
-
-    Args:
-        dim (int): Dimension of the candidate simple algebra.
-
-    Returns:
-        bool: Whether the input dimension matches the dimension of the simple algebra for some n.
-        int: The candidate n. The first return value simply tells us whether this is
-            close to an integer.
-    """
-    assert dla_type in ["su", "so", "sp"]
-
-    if dla_type == "su":
-        n = np.sqrt(dim + 1)
-    elif dla_type == "so":
-        n = (np.sqrt(8 * dim + 1) + 1) / 2
-    elif dla_type == "sp":
-        n = (np.sqrt(8 * dim + 1) - 1) / 4
-
-    if b := is_int(n):
-        n = int(np.round(n))
-    return b, n
-
-
-_exceptional_dims = {3: ("so", 3), 10: ("so", 5), 15: ("so", 6)}
-
-# This is just for printing something:
-_exceptional_isomorphic = {
-    ("so", 3): " or su(2) or sp(1)",
-    ("so", 5): " or sp(2)",
-    ("so", 6): " or su(4)",
-}
-
-
-def _identify_component(dim):
-    """Non-uniquely identify a connected component of the anticommutation graph of a Lie
-    algebra made up of Pauli words. The possible identifications are found by the dimension of
-    the component.
-    """
-    # if dim == 6:
-    # raise ValueError("Encountered a copy of so(4), which looks simple in the Pauli basis but is not simple. Please handle this manually.")
-
-    if dim == 1:
-        return [(1, "u", 1)]
-
-    # Collect 3-tuples with the number of factors, the dla type, and the "n" in the description
-    candidates = []
-    _dim = dim
-    factor = 1
-    while _dim > 2:
-        if _dim in _exceptional_dims:
-            candidates.append((factor,) + _exceptional_dims[_dim])
-
-        else:
-            dla_type = "su"
-            is_of_dla_type, n = get_simple_dim(dla_type, _dim)
-            if is_of_dla_type:
-                # This could be a su(n) but we know that n must be 2^p with p>=3
-                if is_int(np.log2(n)) and np.log2(n) >= 3:
-                    candidates.append((factor, dla_type, n))
-
-            is_so, n_so = get_simple_dim("so", _dim)
-            is_sp, n_sp = get_simple_dim("sp", _dim)
-            if is_so and np.isclose(n_so % 2, 0):
-                assert not is_sp
-                # If the answer is so(4), we instead count this as 2 so(3) factors (because so(4)
-                # is not simple), which is redundant with a different iteration of the while loop.
-                if n_so != 4:
-                    candidates.append((factor, "so", n_so))
-            elif is_so:
-                assert is_sp and n_sp == (n_so - 1) // 2
-                candidates.extend([(factor, "so", n_so), (factor, "sp", n_sp)])
-            else:
-                assert not is_sp
-
-        if _dim % 2 == 1:
-            break
-        _dim = _dim // 2
-        factor *= 2
-
-    return candidates
-
-
-def identify_algebra(comp, verbose=False):
-    """Non-uniquely identify a Lie algebra made up of Pauli words by the dimension of the
-    connected components of its anticommutation graph.
-    """
-    if single_comp := all(isinstance(el, qml.pauli.PauliWord) for el in comp):
-        components = [comp]
-    elif all(
-        isinstance(el, Iterable) and all(isinstance(sub_el, qml.pauli.PauliWord) for sub_el in el)
-        for el in comp
-    ):
-        components = comp
-    else:
-        raise ValueError(
-            f"Expected a list of iterables of PauliWords, or a single Iterable of PauliWords, but got\n{comp}"
-        )
-
-    results = []
-    for i, component in enumerate(components):
-        dim = len(component)
-        candidates = _identify_component(dim)
-        if len(candidates) == 0:
-            raise ValueError(
-                f"Encountered a simple Lie algebra of dimension {dim}, which could not be identified."
-            )
-        if verbose:
-            print(f"Component {i} has dimension {dim} and can be one of the following:")
-            for factor, dla_type, n in candidates:
-                alt_str = _exceptional_isomorphic.get((dla_type, n), "")
-                print(f"{factor} copies of " * (factor > 1) + f"{dla_type}({n})" + alt_str)
-        results.append(candidates)
-
-    if single_comp:
-        results = results[0]
-
-    return results
 
 
 def lie_closure_pauli_words(generators, verbose=False, max_iterations=10000, full_size=None):
@@ -201,8 +76,8 @@ def lie_closure_pauli_words(generators, verbose=False, max_iterations=10000, ful
         List[qml.pauli.PauliWord]: The elements of the closed Pauli word Lie algebra.
     """
 
+    require(all(isinstance(op, qml.pauli.PauliWord) for op in generators), "generators must contain PauliWords.")
     dla = copy.copy(generators)
-    assert all(isinstance(op, qml.pauli.PauliWord) for op in generators)
     # Membership is tested once per commutator, so keep a set alongside the list: `in` on
     # a list of d Pauli words is O(d), which makes the closure O(d^3) rather than O(d^2).
     seen = set(dla)
@@ -233,7 +108,9 @@ def lie_closure_pauli_words(generators, verbose=False, max_iterations=10000, ful
         epoch += 1
 
         if epoch == max_iterations:
-            warnings.warn(f"reached the maximum number of iterations {max_iterations}", UserWarning)
+            warnings.warn(
+                f"reached the maximum number of iterations {max_iterations}", UserWarning, stacklevel=2
+            )
         if new_length == full_size:
             break
 
