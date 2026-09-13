@@ -1,3 +1,4 @@
+import pathlib
 from itertools import combinations, product
 import numpy as np
 import time
@@ -13,6 +14,8 @@ import pennylane as qml
 from pennylane import X, Y, Z, I
 
 from kak_tools.full_workflows import minimal_workflow_tfXY, complete_workflow_tfXY, workflow_tfXY_known_algebra
+
+REPO = pathlib.Path(__file__).resolve().parents[1]
 
 # Config
 #workflow_level = "complete"
@@ -48,8 +51,8 @@ n_max = int(ns[-1])
 t0 = 0.1
 recompute = True
 save = True
-data_filename = f"/home/david/repos/kak-tools/data/fdhs_performance_{workflow_level}_{n_max}"
-plot_filename = f"/home/david/repos/kak-tools/gfx/fdhs_performance_{workflow_level}.pdf"
+data_filename = f"{REPO}/data/fdhs_performance_{workflow_level}_{n_max}"
+plot_filename = f"{REPO}/gfx/fdhs_performance_{workflow_level}.pdf"
 
 if recompute:
     Start = time.process_time()

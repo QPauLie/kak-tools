@@ -1,3 +1,4 @@
+import pathlib
 from itertools import combinations, product
 import numpy as np
 import time
@@ -14,15 +15,17 @@ from pennylane import X, Y, Z, I
 
 from kak_tools.full_workflows import minimal_workflow_tfXY, complete_workflow_tfXY, workflow_tfXY_known_algebra
 
-#plt.rcParams["font.family"] = "serif"  
-#plt.rcParams["font.family"] = "serif"  
+REPO = pathlib.Path(__file__).resolve().parents[1]
+
+#plt.rcParams["font.family"] = "serif"
+#plt.rcParams["font.family"] = "serif"
 from matplotlib import rc
 rc('font',**{'family':'serif','serif':['Computer Modern']})
 rc('text', usetex=True)
 plt.rcParams["text.latex.preamble"] += r"\usepackage{amssymb}\usepackage{amsmath}\usepackage{siunitx}"
 
 # Config
-plot_filename = f"/home/david/repos/kak-tools/gfx/fdhs_performance.pdf"
+plot_filename = f"{REPO}/gfx/fdhs_performance.pdf"
 fontsize = 18
 
 workflow_levels = ["complete", "known_algebra", "minimal", "diag_only"]
@@ -41,9 +44,9 @@ fig, ax = plt.subplots(1, 1, figsize=(7, 5))
 
 for workflow_level in workflow_levels:
     n_max = N_max[workflow_level]
-    ns = np.load(f"/home/david/repos/kak-tools/data/fdhs_performance_{workflow_level}_{n_max}_ns.npy")
+    ns = np.load(f"{REPO}/data/fdhs_performance_{workflow_level}_{n_max}_ns.npy")
     #ns = 2 * ns**2 - ns
-    times = np.load(f"/home/david/repos/kak-tools/data/fdhs_performance_{workflow_level}_{n_max}.npy")
+    times = np.load(f"{REPO}/data/fdhs_performance_{workflow_level}_{n_max}.npy")
 
     m = Markers[workflow_level]
     c = Colors[workflow_level]
@@ -53,9 +56,9 @@ for workflow_level in workflow_levels:
 
 for workflow_level in workflow_levels:
     n_max = N_max[workflow_level]
-    ns = np.load(f"/home/david/repos/kak-tools/data/fdhs_performance_{workflow_level}_{n_max}_ns.npy")
+    ns = np.load(f"{REPO}/data/fdhs_performance_{workflow_level}_{n_max}_ns.npy")
     #ns = 2 * ns**2 - ns
-    times = np.load(f"/home/david/repos/kak-tools/data/fdhs_performance_{workflow_level}_{n_max}.npy")
+    times = np.load(f"{REPO}/data/fdhs_performance_{workflow_level}_{n_max}.npy")
     cont_ns = np.linspace(ns[0], ns[-1], 100)
 
     m = Markers[workflow_level]

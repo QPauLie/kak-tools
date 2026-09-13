@@ -1,9 +1,12 @@
+import pathlib
 from kak_tools.full_workflows import diagonalization_tfXY
 import numpy as np
 import time
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 from scipy.optimize import curve_fit
+
+REPO = pathlib.Path(__file__).resolve().parents[1]
 
 coefficients = "random"
 spacing = 0.3
@@ -20,8 +23,8 @@ n_max = int(ns[-1])
 t0 = 0.1
 recompute = True
 save = True
-data_filename = f"/home/david/repos/kak-tools/data/fdhs_performance_diag_only_{n_max}"
-plot_filename = f"/home/david/repos/kak-tools/gfx/diag_performance.pdf"
+data_filename = f"{REPO}/data/fdhs_performance_diag_only_{n_max}"
+plot_filename = f"{REPO}/gfx/diag_performance.pdf"
 
 if recompute:
     Start = time.process_time()
