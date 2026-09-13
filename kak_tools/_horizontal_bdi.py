@@ -10,7 +10,18 @@ from __future__ import annotations
 import numpy as np
 from scipy.linalg import block_diag, svd
 
+from ._pauli_rotations import PauliRotation
 from ._validation import finite_real_scalar, nonnegative_tolerance
+
+
+def _cartan_matrix(theta, p, q):
+    """Canonical CS rotation of BDI(p, q): plane ``(i, max(p, q) + i)`` turns by ``theta[i]``."""
+    matrix = np.eye(p + q)
+    first = np.arange(min(p, q))
+    second = first + max(p, q)
+    matrix[first, first] = matrix[second, second] = np.cos(theta)
+    matrix[first, second], matrix[second, first] = np.sin(theta), -np.sin(theta)
+    return matrix
 
 
 def horizontal_generator_decomposition(hamiltonian, p):
@@ -90,30 +101,19 @@ def _special_orthogonal_givens(matrix, start=0):
     return rotations
 
 
-def _plane_matrix(angle):
-    cosine, sine = np.cos(angle), np.sin(angle)
-    return np.array([[cosine, sine], [-sine, cosine]])
-
-
-def decompose_horizontal_hamiltonian(
-    hamiltonian, p, mapping, signs, time=1.0, tol=None
-):
-    """Return Pauli rotations and concrete matrix factors for ``exp(time * H)``.
+def decompose_horizontal_hamiltonian(hamiltonian, p, mapping, signs, time=1.0, tol=None):
+    """Return the Pauli rotations that compile ``exp(time * H)``.
 
     ``mapping`` and ``signs`` use kak_tools' convention
-    ``i * PauliWord -> 2 * sign * (E_ij - E_ji)``. The central ``a0`` angles
-    are Hamiltonian coefficients: multiply them by the evolution time when
-    applying the circuit. They are never divided by time, so a result computed
-    at zero time remains reusable at any other time.
+    ``i * PauliWord -> 2 * sign * (E_ij - E_ji)``. The central ``a0`` coefficients
+    are Hamiltonian rates: multiply them by the evolution time when applying the
+    circuit. They are never divided by time, so a result computed at zero time
+    remains reusable at any other time; ``time`` only has to keep ``time * rate``
+    finite.
 
     The right sequence is exactly the reverse, negated left sequence. This
     preserves the inverse also in the physical Pauli representation, where
     independently factoring two equal SO matrices could choose different lifts.
-
-    ``matrix_factors`` contains ``(matrix, start, end, kind)`` tuples. Every
-    matrix is a concrete group element at the supplied time. In particular,
-    the central entry is a full matrix, not the angle array of ``recursive_bdi``.
-    Left and right Givens factors occupy adjacent 2-by-2 blocks.
 
     ``tol`` omits small vertical Pauli angles; this is an approximation. Cartan
     rates are retained, including zeros, so small Hamiltonian coefficients do
@@ -123,36 +123,19 @@ def decompose_horizontal_hamiltonian(
     tol = nonnegative_tolerance(tol, "tol")
 
     k, rates, planes = horizontal_generator_decomposition(hamiltonian, p)
-    n = len(k)
     givens = _special_orthogonal_givens(k[:p, :p])
     givens += _special_orthogonal_givens(k[p:, p:], start=p)
+    if not np.isfinite(time * rates).all():
+        raise ValueError("Evolution time times a Cartan rate exceeds the finite float range.")
 
-    left_rotations, left_factors = [], []
+    left = []
     for plane, angle in givens:
         coefficient = angle / (2 * signs[plane])
-        if tol is not None and abs(coefficient) < tol:
-            continue
-        word = mapping[plane]
-        left_rotations.append((word, coefficient, "k1"))
-        left_factors.append((_plane_matrix(angle), plane[0], plane[1] + 1, "k1"))
-
-    cartan_rotations = [
-        (mapping[plane], float(rate / (2 * signs[plane])), "a0")
-        for plane, rate in zip(planes, rates)
+        if tol is None or abs(coefficient) >= tol:
+            left.append(PauliRotation(mapping[plane], coefficient, "k1"))
+    cartan = [
+        PauliRotation(mapping[plane], float(rate / (2 * signs[plane])), "a0")
+        for plane, rate in zip(planes, rates, strict=True)
     ]
-    cartan_matrix = np.eye(n)
-    for plane, rate in zip(planes, rates):
-        angle = time * float(rate)
-        if not np.isfinite(angle):
-            raise ValueError("Evolution time times a Cartan rate exceeds the finite float range.")
-        cartan_matrix[np.ix_(plane, plane)] = _plane_matrix(angle)
-
-    right_rotations = [(word, -angle, "k2") for word, angle, _ in reversed(left_rotations)]
-    right_factors = [
-        (matrix.T.copy(), start, end, "k2")
-        for matrix, start, end, _ in reversed(left_factors)
-    ]
-    return (
-        left_rotations + cartan_rotations + right_rotations,
-        left_factors + [(cartan_matrix, 0, n, "a0")] + right_factors,
-    )
+    right = [PauliRotation(word, -coefficient, "k2") for word, coefficient, _ in reversed(left)]
+    return left + cartan + right

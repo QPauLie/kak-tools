@@ -5,6 +5,8 @@ from itertools import combinations
 from pennylane.pauli import PauliSentence
 from scipy.linalg import block_diag, cossin, expm, det
 
+from ._horizontal_bdi import _cartan_matrix
+
 
 def _cosine_resolved_svd(a, b, d):
     """Keep weak sine directions separate from opposite-cosine eigenspaces.
@@ -143,16 +145,6 @@ def _horizontal_bdi(u, p, q):
     if not np.allclose(k1 @ cartan @ k1.T, u, atol=1e-10, rtol=1e-10):
         raise ValueError("The horizontal BDI factors do not reconstruct the input matrix.")
     return k11, k12, theta, k11.T.copy(), k12.T.copy()
-
-
-def _cartan_matrix(theta, p, q):
-    """Canonical CS rotation with free axes between the paired axes."""
-    matrix = np.eye(p + q)
-    first = np.arange(min(p, q))
-    second = first + max(p, q)
-    matrix[first, first] = matrix[second, second] = np.cos(theta)
-    matrix[first, second], matrix[second, first] = np.sin(theta), -np.sin(theta)
-    return matrix
 
 
 def bdi(u, p, q, is_horizontal=True, validate=True, **kwargs):

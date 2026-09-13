@@ -58,16 +58,13 @@ def test_time_independent_factorization_and_physical_phase(p):
     coefficients = np.random.default_rng(p).normal(size=len(words))
     h = sum(c * matrices[w] for c, w in zip(coefficients, words))
     physical_h = sum(c * w.to_mat(wire_order=[0, 1]) for c, w in zip(coefficients, words))
-    rotations, _ = decompose_horizontal_hamiltonian(h, p, mapping, signs, time=0)
-    other, factors = decompose_horizontal_hamiltonian(h, p, mapping, signs, time=4.2)
-    assert other == rotations
+    rotations = decompose_horizontal_hamiltonian(h, p, mapping, signs, time=0)
+    assert decompose_horizontal_hamiltonian(h, p, mapping, signs, time=4.2) == rotations
     left = [(w, a) for w, a, kind in rotations if kind == "k1"]
     assert [(w, a) for w, a, kind in rotations if kind == "k2"] == [(w, -a) for w, a in reversed(left)]
     reconstructed = np.eye(6)
-    for matrix, start, end, _ in factors:
-        embedded = np.eye(6)
-        embedded[start:end, start:end] = matrix
-        reconstructed = reconstructed @ embedded
+    for word, angle, kind in rotations:
+        reconstructed = reconstructed @ expm(matrices[word] * angle * (4.2 if kind == "a0" else 1))
     np.testing.assert_allclose(reconstructed, expm(4.2 * h), atol=3e-12)
     for time in [-1.3, np.pi, 4.2]:
         physical = np.eye(4, dtype=complex)
@@ -80,7 +77,7 @@ def test_small_rate_survives_long_time_and_vertical_pruning():
     mapping, signs, classification = map_dla_to_irrep(["X", "Y"])
     matrices = labelled_matrix_basis(mapping, signs, classification)
     h = 1e-12 * matrices[mapping[(0, 1)]]
-    rotations, _ = decompose_horizontal_hamiltonian(h, 1, mapping, signs, time=0, tol=1e-8)
+    rotations = decompose_horizontal_hamiltonian(h, 1, mapping, signs, time=0, tol=1e-8)
     reconstructed = np.eye(3)
     for word, angle, kind in rotations:
         reconstructed = reconstructed @ expm(matrices[word] * angle * (1e12 if kind == "a0" else 1))

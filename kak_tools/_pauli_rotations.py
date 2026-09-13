@@ -1,12 +1,26 @@
 """Reconstruct products of Pauli rotations in a matrix representation."""
 
 import math
+from typing import NamedTuple
 
 import numpy as np
 from scipy.linalg import expm
 
-
 from ._validation import finite_real_scalar as _finite_real_scalar, positive_integer
+
+
+class PauliRotation(NamedTuple):
+    """One factor ``exp(i * coefficient * word)`` of a compiled evolution.
+
+    ``kind`` is ``"k1"`` or ``"k2"`` for the vertical factors and ``"a0"`` for
+    the central Cartan factors, whose coefficients are rates that the caller
+    multiplies by the evolution time. Unpacks like a plain ``(word, coefficient, kind)``
+    tuple.
+    """
+
+    word: object
+    coefficient: float
+    kind: str
 
 
 def _rotation_plane(matrix):

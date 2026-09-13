@@ -3,6 +3,36 @@
 import numpy as np
 
 
+def require(condition, message):
+    """Raise ValueError unless ``condition`` holds; unlike ``assert`` it survives ``python -O``."""
+    if not condition:
+        raise ValueError(message)
+
+
+def integer(value, name, minimum=None, maximum=None):
+    """Return ``int(value)`` for a genuine integer (bools excluded) within the given bounds."""
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, np.integer)):
+        raise ValueError(f"{name} must be an integer.")
+    value = int(value)
+    if minimum is not None and value < minimum:
+        raise ValueError(f"{name} must be at least {minimum}.")
+    if maximum is not None and value > maximum:
+        raise ValueError(f"{name} must be at most {maximum}.")
+    return value
+
+
+def require_square(matrix, name="matrix", size=None):
+    """Return ``matrix`` as an array after checking it is square, numeric and finite."""
+    matrix = np.asarray(matrix)
+    if matrix.ndim != 2 or matrix.shape[0] != matrix.shape[1]:
+        raise ValueError(f"{name} must be a square matrix.")
+    if size is not None and matrix.shape[0] != size:
+        raise ValueError(f"{name} must have size {size}, got {matrix.shape[0]}.")
+    if matrix.dtype.kind not in "biufc" or not np.isfinite(matrix).all():
+        raise ValueError(f"{name} must contain finite numeric values.")
+    return matrix
+
+
 def finite_real_scalar(value, name):
     """Accept finite numeric scalars, including complex values with zero imaginary part."""
     message = f"{name} must be a finite real scalar."
@@ -31,9 +61,14 @@ def nonnegative_tolerance(value, name):
 
 
 def positive_integer(value, name):
-    if (isinstance(value, (bool, np.bool_))
-            or not isinstance(value, (int, np.integer)) or value < 1):
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, np.integer)) or value < 1:
         raise ValueError(f"{name} must be a positive integer.")
+    return int(value)
+
+
+def nonnegative_integer(value, name):
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, np.integer)) or value < 0:
+        raise ValueError(f"{name} must be a nonnegative integer.")
     return int(value)
 
 

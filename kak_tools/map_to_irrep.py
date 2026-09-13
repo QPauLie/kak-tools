@@ -75,12 +75,21 @@ def anticom_graph_irrep(n, invol_type=None, invol_kwargs=None):
     raise NotImplementedError("Only BDI, DIII and AIII are implemented.")
 
 
+class HorizontalEmbeddingError(ValueError):
+    """The horizontal Pauli words do not fit the horizontal subspace of the involution."""
+
+
 def map_horizontal_subgraph(pauli_graph, horizontal_graph):
     """Initiate a mapping between irrep elements and Pauli words by identifying
     a subgraph in the horizontal anticommutation graph of the former that is isomorphic
     to the anticommutation graph of the latter."""
     graph_matcher = nx.algorithms.isomorphism.GraphMatcher(horizontal_graph, pauli_graph)
-    return next(graph_matcher.subgraph_isomorphisms_iter())
+    mapping = next(graph_matcher.subgraph_isomorphisms_iter(), None)
+    if mapping is None:
+        raise HorizontalEmbeddingError(
+            "The Pauli generators cannot all be embedded in the horizontal subspace."
+        )
+    return mapping
 
 
 def _node_commutator(node1, node2, invol_type):

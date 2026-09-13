@@ -30,7 +30,7 @@ from ._pauli_inputs import (
 )
 from ._pauli_rotations import reconstruct_from_pauli_rotations
 from ._validation import finite_real_scalar, nonnegative_tolerance, resolve_bdi_partition
-from .map_to_irrep import _validate_so_mapping, map_simple_to_irrep
+from .map_to_irrep import HorizontalEmbeddingError, _validate_so_mapping, map_simple_to_irrep
 
 __all__ = [
     "KAKResult",
@@ -192,7 +192,7 @@ def _map_verified_basis(words, basis, irrep_size, involution, p, q):
             list(basis), horizontal_ops=words, n=irrep_size,
             invol_type=involution, invol_kwargs={"p": p, "q": q},
         )
-    except StopIteration as exc:
+    except HorizontalEmbeddingError as exc:
         raise ValueError(
             f"The Pauli generators cannot all be embedded in the horizontal "
             f"subspace of BDI({p}, {q}). Supply a compatible generator set or partition."
@@ -209,11 +209,9 @@ class KAKResult:
     ``classification`` is PauLie's native Classification; ``n_qubits`` records
     the physical register independently of its irreducible representation.
 
-    ``pauli_rotations`` contains (PauliWord, angle, kind) triples: ``k1``/``k2``
-    are vertical rotations; ``a`` and ``a0`` are Cartan factors. Only ``a0`` rates
-    are scaled by evolution time.
-    ``matrix_factors`` contains (matrix, start, end, kind) group factors at ``time``;
-    matrices embed in [start:end, start:end], with a full central matrix.
+    ``pauli_rotations`` contains ``PauliRotation(word, coefficient, kind)`` records:
+    ``k1``/``k2`` are vertical rotations; ``a0`` are Cartan rates, the only
+    coefficients that are scaled by the evolution time.
 
     ``mapping`` and ``signs`` relate irrep planes to Pauli words; ``algebra_basis``
     contains their signed matrices. ``unitary_irrep = expm(time * hamiltonian_irrep)``.
@@ -229,7 +227,6 @@ class KAKResult:
     time: float
     hamiltonian_irrep: np.ndarray
     unitary_irrep: np.ndarray
-    matrix_factors: list = field(repr=False, default_factory=list)
     mapping: dict = field(repr=False, default_factory=dict)
     signs: dict = field(repr=False, default_factory=dict)
     algebra_basis: dict = field(repr=False, default_factory=dict)
@@ -311,9 +308,7 @@ def kak_decomposition(
     if not np.isfinite(scaled_hamiltonian).all():
         raise ValueError("The time-scaled Hamiltonian must contain finite values.")
     unitary = expm(scaled_hamiltonian)
-    pauli_rotations, matrix_factors = decompose_horizontal_hamiltonian(
-        hamiltonian, p, mapping, signs, time=time, tol=tol
-    )
+    pauli_rotations = decompose_horizontal_hamiltonian(hamiltonian, p, mapping, signs, time=time, tol=tol)
 
     if atol is None:
         # Givens factorization uses O(irrep_size**2) rotations; allow for their
@@ -341,7 +336,6 @@ def kak_decomposition(
         time=time,
         hamiltonian_irrep=hamiltonian,
         unitary_irrep=unitary,
-        matrix_factors=matrix_factors,
         mapping=mapping,
         signs=signs,
         algebra_basis=algebra_basis,

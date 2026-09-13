@@ -81,8 +81,6 @@ returns the native PauLie classification after input normalization.
 
 The physical convention is **exp(+it ΣcP)**. A PennyLane `PauliRot` takes
 `-2 * coefficient`, additionally multiplied by time for central `a0` rates.
-`matrix_factors` stores `(matrix, start, end, kind)` group factors at the original
-time; these differ from `recursive_bdi`'s arrays of CS angles.
 
 ### Algorithm and scope
 
