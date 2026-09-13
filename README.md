@@ -76,18 +76,39 @@ For an already complete generator list, omit `n` in `get_pauli_string`:
 The example in `notebooks/paulie_bridge_example.py` uses PauLie's native
 `get_all_k_local` to build an open chain and checks the physical evolution.
 
-| API | Purpose |
+PauLie's classification is used as is:
+
+| PauLie API | Purpose |
 | --- | --- |
 | `Classification.get_algebra()`, `.get_dla_dim()`, `.get_subalgebras()` | Algebra name, dimension and summands |
 | `Classification.is_simple()`, `.get_simple_component()` | Test simplicity and retrieve the unique simple summand |
 | `Classification.get_orthogonal_size()` | Find an isomorphic so(m) presentation, or return `None` |
 | `Classification.get_algebra_basis()` | Basis in PauLie's classified presentation |
-| `dla_pauli_basis` | Complete native Pauli closure, converted to PennyLane words |
+
+Everything `kak_tools` exports, by layer:
+
+| `kak_tools` API | Purpose |
+| --- | --- |
+| `kak_decomposition`, `KAKResult`, `PauliRotation` | Compile `exp(time * H)` into typed Pauli rotations |
 | `map_dla_to_irrep(generators, n_qubits=..., invol_kwargs=...)` | Return `(mapping, signs, classification)` for signed rotation planes |
 | `labelled_matrix_basis(mapping, signs, classification, n_qubits=...)` | Verified signed so(m) generator matrices `2 * sign * (E_ij - E_ji)` per Pauli word |
-| `kak_decomposition`, `KAKResult`, `PauliRotation` | Compile `exp(time * H)` into typed Pauli rotations |
-| `reconstruct_from_pauli_rotations` | Recompose a matrix from ordered rotations |
+| `dla_pauli_basis` | Complete native Pauli closure, converted to PennyLane words |
+| `as_pauli_words`, `as_pauli_collection` | Normalize mixed generator inputs to PennyLane words or a padded PauLie collection |
 | `pauli_string_to_word`, `pauli_word_to_string` | Convert between PauLie and PennyLane |
+| `reconstruct_from_pauli_rotations` | Recompose a matrix from ordered rotations |
+| `bdi`, `recursive_bdi` | Dense BDI(p, q) factorization of one SO(n) element, and its recursion down to 2x2 blocks |
+| `group_matrix_to_reducible`, `map_recursive_decomp_to_reducible` | Map dense factors back to Pauli rotations through a signed mapping |
+| `a_kak`, `ai_kak`, `aii_kak`, `aiii_kak`, `bd_kak`, `bdi_kak`, `c_kak`, `ci_kak`, `cii_kak`, `diii_kak` | Matrix-level KAK decompositions `K1 @ A @ K2` for the ten classical Cartan types |
+| `map_simple_to_irrep`, `map_irrep_to_matrices`, `map_matrix_to_reducible` | Map an so(n) Pauli basis to rotation planes, to matrices, and back |
+| `irrep_dot`, `make_signs`, `E` | Build a Hamiltonian in the irrep, derive the star-gauge signs, and the plane generator |
+| `lie_closure_pauli_words`, `split_pauli_algebra`, `anticom_graph_pauli` | Pauli-word Lie closure, its anticommutation graph and its connected components |
+
+The public names are imported lazily, so the numpy-only routines load without
+PennyLane or PauLie. The transverse-field XY benchmark of the paper (App. F) lives in
+`kak_tools.tfxy_model`: `make_so_2n`, `make_so_2n_full_mapping` for the hard-coded so(2n)
+mapping with its signs, and `make_tfXY_hamiltonian_qubits` and `make_tfXY_hamiltonian_irrep`
+for the model Hamiltonians; `kak_tools.full_workflows` runs the fixed-depth simulation
+workflows on top of them.
 
 For `2*so(3)`, the classified basis uses 6×6 matrices, while the bridge works in the
 4×4 so(4) presentation. Dimension alone is insufficient: so(7) and sp(3) both have

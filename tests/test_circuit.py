@@ -4,12 +4,12 @@ import numpy as np
 import pennylane as qml
 import pytest
 from scipy.linalg import expm
+
 from kak_tools import (
-    lie_closure_pauli_words, map_simple_to_irrep, map_irrep_to_matrices,
-    recursive_bdi, map_recursive_decomp_to_reducible,
+    lie_closure_pauli_words, map_irrep_to_matrices, map_recursive_decomp_to_reducible, map_simple_to_irrep,
+    recursive_bdi,
 )
-from kak_tools.dense_cartan import group_matrix_to_reducible_str
-from test_map_to_irrep import tfxy_words
+from checks import assert_equal_up_to_sign, expected_evolution, tfxy_words
 
 
 @pytest.mark.parametrize("n", [2, 3])
@@ -34,20 +34,6 @@ def test_recursive_compilation_in_circuit(n):
             for word, angle, kind in reversed(rotations)
         ])
 
-    physical_h = sum(c * w.to_mat(wire_order=range(n)) for c, w in zip(coefficients, words, strict=True))
     for time in [-1.3, 0., 25.]:
         actual = qml.matrix(circuit(time), wire_order=range(n))
-        expected = expm(1j * time * physical_h)
-        sign = np.sign(np.trace(actual @ expected.conj().T).real) or 1.
-        np.testing.assert_allclose(actual, sign * expected, atol=1e-10)
-
-
-def test_legacy_so2_angle_survives_a_sine_rounded_beyond_one():
-    mapping = {(0, 1): ("XX", 1)}
-    sine = np.nextafter(1.0, 2.0)
-    [(word, angle)] = group_matrix_to_reducible_str(np.array([[0., sine], [-sine, 0.]]), 0, mapping).items()
-    assert word == "XX" and np.isclose(angle, np.pi / 4)
-    theta = 2.5
-    block = np.array([[np.cos(theta), np.sin(theta)], [-np.sin(theta), np.cos(theta)]])
-    [(_, angle)] = group_matrix_to_reducible_str(block, 0, mapping).items()
-    assert np.isclose(angle, theta / 2)
+        assert_equal_up_to_sign(actual, expected_evolution(words, coefficients, time, n), atol=1e-10)

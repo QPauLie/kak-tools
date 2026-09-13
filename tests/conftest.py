@@ -5,6 +5,8 @@ import pytest
 from scipy.linalg import block_diag
 from scipy.stats import ortho_group
 
+from checks import rotation
+
 
 @pytest.fixture
 def bd_schur_matrix():
@@ -17,8 +19,7 @@ def bd_schur_matrix():
 
     def build(angles, plus, minus, seed):
         rng = np.random.default_rng(seed)
-        rotations = [[[np.cos(t), np.sin(t)], [-np.sin(t), np.cos(t)]] for t in angles]
-        delta = block_diag(*rotations, np.eye(plus), -np.eye(minus))
+        delta = block_diag(*[rotation(t) for t in angles], np.eye(plus), -np.eye(minus))
         frame, o2 = (ortho_group.rvs(len(delta), random_state=rng) for _ in range(2))
         frame[0] *= np.linalg.det(frame)
         o2[0] *= np.linalg.det(o2)
