@@ -7,7 +7,10 @@ from pennylane.pauli import PauliWord
 from scipy.linalg import expm
 
 from kak_tools.dense_cartan import group_matrix_to_reducible
-from kak_tools.map_to_irrep import E, anticom_graph_irrep, irrep_dot, make_signs, map_simple_to_irrep
+from kak_tools.map_to_irrep import (
+    E, anticom_graph_irrep, irrep_dot, make_signs, map_matrix_to_reducible, map_simple_to_irrep,
+)
+from kak_tools.pauli_dlas import anticom_graph_pauli, lie_closure_pauli_words, split_pauli_algebra
 from kak_tools.paulie_bridge import (
     as_pauli_words, kak_decomposition, labelled_matrix_basis,
     pauli_string_to_word,
@@ -113,17 +116,17 @@ def dot_mapping():
     return [x, y], {(0, 1): x, (0, 2): y}, {(0, 1): -1, (0, 2): 1}
 
 
-@pytest.mark.parametrize("convention", ["separate", "paired", "legacy"])
+@pytest.mark.parametrize("convention", ["separate", "paired"])
 def test_irrep_dot_preserves_accepted_calling_conventions(dot_mapping, convention):
     words, mapping, signs = dot_mapping
     paired = {plane: (word, signs[plane]) for plane, word in mapping.items()}
     if convention == "separate":
         result = irrep_dot([.3, -1.7], words, mapping, signs, n=np.int64(3), invol_type="BDI")
-    elif convention == "paired":
-        result = irrep_dot([.3, -1.7], words, paired, n=3, invol_type="BDI")
     else:
-        result = irrep_dot([.3, -1.7], words, paired, 3, "BDI")
+        result = irrep_dot([.3, -1.7], words, paired, n=3)
     np.testing.assert_array_equal(result, -.3 * E((0, 1), 3, "BDI") - 1.7 * E((0, 2), 3, "BDI"))
+    with pytest.raises(TypeError):
+        irrep_dot([.3, -1.7], words, paired, 3, "BDI")  # n is keyword-only.
 
 
 @pytest.mark.parametrize("defect", ["coefficient_count", "dimension", "missing_word", "missing_sign", "sign", "node"])
@@ -150,24 +153,30 @@ def test_empty_irrep_dot_returns_a_matrix():
     np.testing.assert_array_equal(irrep_dot([], [], {}, n=3, invol_type="BDI"), np.zeros((3, 3)))
 
 
-def test_aiii_generators_and_dot_keep_the_complex_lie_algebra_convention():
-    x, y, z = (E((0, 1, kind), 2, "AIII") for kind in "XYZ")
-    basis = np.stack([x, y, z])
-    np.testing.assert_array_equal(basis.conj().transpose(0, 2, 1), -basis)
-    np.testing.assert_array_equal(np.trace(basis, axis1=1, axis2=2), [0, 0, 0])
-    np.testing.assert_array_equal(x @ y - y @ x, -2 * z)
-    word = pauli_string_to_word("X")
-    result = irrep_dot([2.0], [word], {(0, 1, "X"): (word, 1)}, n=2, invol_type="AIII")
-    np.testing.assert_array_equal(result, np.array([[0, 2j], [2j, 0]]))
-    unitary = expm(.3 * (x + y + z))
-    np.testing.assert_allclose(unitary.conj().T @ unitary, np.eye(2), atol=2e-15, rtol=0)
-
-
-def test_unsupported_graph_and_matrix_involutions_raise_instead_of_returning_none():
+@pytest.mark.parametrize("call", [
+    lambda: anticom_graph_irrep(3, "unknown", {}),
+    lambda: E((0, 1), 2, "unknown"),
+    lambda: make_signs({(0, 1): pauli_string_to_word("X")}, 2, "DIII"),
+    lambda: map_matrix_to_reducible(np.zeros((2, 2)), {}, {}, "AIII"),
+    lambda: irrep_dot([], [], {}, n=2, invol_type="AIII"),
+    lambda: map_simple_to_irrep(as_pauli_words(["X"]), as_pauli_words(["X"]), n=2, invol_type="AI"),
+])
+def test_unsupported_involutions_raise_not_implemented_instead_of_returning_none(call):
     with pytest.raises(NotImplementedError, match="Only BDI"):
-        anticom_graph_irrep(3, "unknown", {})
-    with pytest.raises(NotImplementedError, match="not implemented"):
-        E((0, 1), 2, "unknown")
+        call()
+
+
+@pytest.mark.parametrize("call", [
+    lambda: anticom_graph_pauli(["X"]),
+    lambda: split_pauli_algebra(["X"]),
+    lambda: lie_closure_pauli_words(["X"]),
+    lambda: map_simple_to_irrep(["X", "Y", "Z"], as_pauli_words(["X", "Y"]), n=3, invol_type="BDI"),
+    lambda: map_simple_to_irrep(as_pauli_words(["X", "Y", "Z"]), ["X", "Y"], n=3, invol_type="BDI"),
+    lambda: map_simple_to_irrep(as_pauli_words(["X", "Y", "Z"]), {(0, 1): "X"}, n=3, invol_type="BDI"),
+])
+def test_pauli_word_input_checks_raise_value_error_even_under_python_O(call):
+    with pytest.raises(ValueError, match="PauliWords"):
+        call()
 
 
 def test_exact_pi_rotation_is_not_dropped_and_a_reflection_is_rejected():
@@ -177,5 +186,5 @@ def test_exact_pi_rotation_is_not_dropped_and_a_reflection_is_rejected():
     assert actual == word and np.isclose(angle, np.pi / 2)
     np.testing.assert_allclose(expm(E((0, 1), 2, "BDI") * angle), -np.eye(2), atol=1e-15, rtol=0)
     assert not group_matrix_to_reducible(np.eye(2), 0, mapping, signs)
-    with pytest.raises(AssertionError, match="determinant -1"):
+    with pytest.raises(ValueError, match="determinant -1"):
         group_matrix_to_reducible(np.diag([1., -1.]), 0, mapping, signs)
