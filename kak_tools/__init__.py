@@ -41,7 +41,6 @@ from .numerical_decompositions import (
     c_kak,
     ci_kak,
     cii_kak,
-    sympl_eig,
 )
 
 # Bridge to PauLie (https://github.com/QPauLie/PauLie), which classifies the dynamical

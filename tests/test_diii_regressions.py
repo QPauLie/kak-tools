@@ -91,3 +91,43 @@ def test_ci_phase_reference_ignores_tiny_leading_coordinate():
     # The deflated leading coordinate is about 1e-16; its phase is unreliable.
     diagonal = np.diag(np.exp(1j * np.array([0.3, 0.3, -0.3, -0.3])))
     _check(_vertical(2, 145) @ diagonal, kind="ci")
+
+
+def _ci_element(angles, seed):
+    """K1 (D (+) D*) K2 with K in U(n) embedded in SO(2n) and Cartan angles ``angles``."""
+    angles = np.asarray(angles, dtype=float)
+    center = np.diag(np.exp(1j * np.concatenate([angles, -angles])))
+    return _vertical(len(angles), seed) @ center @ _vertical(len(angles), seed + 500)
+
+
+@pytest.mark.parametrize("angles", [
+    (np.pi / 2, np.pi / 2),
+    (np.pi, 0.0),
+    (np.pi, np.pi),
+    (np.pi / 2, -np.pi / 2),
+    (np.pi, 0.3),
+    (1e-12, -1e-12),
+    (0.3, 0.3 + 1e-11),
+    (0.3, 0.3 + 1e-8),
+    (0.3, 0.3, 1.1, 1.1),
+    (0.0, 0.0, 0.0, 0.0, 0.3, 0.3),
+    (np.pi, np.pi, 0.0, 0.0, 0.0, 0.0, 0.3, 0.3, 0.7, -0.7),
+], ids=[
+    "right-angles", "pi-and-zero", "two-pi", "opposite-right-angles", "pi-and-generic", "near-identity",
+    "split-1e-11", "split-1e-8", "two-doubles", "quadruple-zero", "n-10-mixed",
+])
+def test_ci_real_and_nearly_repeated_delta_eigenvalues(angles):
+    # A real (+-1) or nearly repeated eigenvalue of S S^T comes with complex LAPACK
+    # eigenvectors that are neither conjugation-proportional nor orthonormal, and
+    # whose imaginary parts may be roundoff; the real eigenbasis must not
+    # normalize such parts into itself.
+    for seed in range(10, 20):
+        _check(_ci_element(angles, seed), kind="ci")
+
+
+@pytest.mark.parametrize("n,seeds", [(4, range(10, 20)), (25, range(30, 40))])
+def test_ci_vertical_input(n, seeds):
+    # S in K = U(n) has Delta = I up to roundoff, a fully degenerate real eigenspace
+    # for which LAPACK occasionally returns complex eigenvectors (seeds 13 and 30).
+    for seed in seeds:
+        _check(_vertical(n, seed), kind="ci", atol=1e-9)
