@@ -20,6 +20,25 @@ def _orthogonal_block(size, rng):
     return expm(matrix - matrix.T)
 
 
+def _horizontal_element(p, q, angles, seed):
+    rng = np.random.default_rng(seed)
+    k = block_diag(_orthogonal_block(p, rng), _orthogonal_block(q, rng))
+    return k @ _cartan(angles, p, q) @ k.T
+
+
+def _reconstruct(factors, n):
+    reconstructed = np.eye(n)
+    for block, start, end, kind in factors:
+        embedded = np.eye(n)
+        width = end - start
+        embedded[start:end, start:end] = (
+            _cartan(block, width // 2, width - width // 2)
+            if kind.startswith("a") else block
+        )
+        reconstructed = reconstructed @ embedded
+    return reconstructed
+
+
 def _assert_factors(u, p, q, horizontal=True):
     k11, k12, theta, k21, k22 = bdi(
         u, p, q, is_horizontal=horizontal, validate=True
@@ -52,6 +71,19 @@ def test_horizontal_resonances_and_degenerate_eigenspaces(p, q, angles):
     k = block_diag(_orthogonal_block(p, rng), _orthogonal_block(q, rng))
     u = k @ _cartan(angles, p, q) @ k.T
     _assert_factors(u, p, q)
+
+
+@pytest.mark.parametrize("p,q,angles", [
+    (2, 2, [1.2, np.pi - 1.2 + 1e-9]),
+    (5, 6, [np.arccos(.98), np.arccos(.95), np.arccos(.25), np.pi - np.arccos(.25) + 1e-9, np.arccos(-.3)]),
+])
+def test_horizontal_resonant_pair_with_small_cosine_gap(p, q, angles):
+    # Angles theta and pi - theta + delta have sines differing by delta cos(theta)
+    # but cosines differing by 2 cos(theta). Pairing the planes through the sine
+    # SVD alone mixes them by O(eps / (delta cos theta)); with |cos theta| <= 1/2
+    # the combined cosine spectrum is narrower than one, which a largest-gap
+    # split that stops at that width leaves unresolved.
+    _assert_factors(_horizontal_element(p, q, angles, 11), p, q)
 
 
 @pytest.mark.parametrize("p,q,scale", [(2, 3, 1e-8), (4, 4, 1e-5)])
@@ -96,6 +128,17 @@ def test_general_csd_path_preserves_reconstruction(p, q):
     _assert_factors(u, p, q, horizontal=False)
 
 
+def test_general_path_rejects_wrong_shape_and_non_orthogonal_input():
+    with pytest.raises(ValueError, match="size 4"):
+        bdi(np.eye(5), 2, 2, is_horizontal=False)
+    rng = np.random.default_rng(3)
+    with pytest.raises(ValueError, match="orthogonal"):
+        bdi(rng.normal(size=(4, 4)), 2, 2, is_horizontal=False, validate=True)
+    nearly = expm(rng.normal(size=(4, 4)) * .1) @ np.diag([1 + 1e-3, 1., 1., 1.])
+    with pytest.raises(ValueError, match="orthogonal"):
+        bdi(nearly, 2, 2, is_horizontal=False, validate=True)
+
+
 @pytest.mark.parametrize("validate", [False, True])
 def test_horizontal_mode_rejects_a_general_group_element(validate):
     u = np.eye(5)
@@ -106,20 +149,23 @@ def test_horizontal_mode_rejects_a_general_group_element(validate):
 
 
 @pytest.mark.parametrize("n", [5, 6])
-def test_recursive_horizontal_factors_reconstruct(n):
+@pytest.mark.parametrize("kwargs", [
+    {}, {"num_iter": 1}, {"return_all": True}, {"return_all": True, "num_iter": 1},
+    {"first_is_horizontal": False}, {"first_is_horizontal": False, "return_all": True},
+])
+def test_recursive_bdi_options_reconstruct_at_every_level(n, kwargs):
     p, q = n // 2, n - n // 2
-    rng = np.random.default_rng(23)
-    k = block_diag(_orthogonal_block(p, rng), _orthogonal_block(q, rng))
-    angles = np.resize([np.pi, 0.4, np.pi / 2], p)
-    u = k @ _cartan(angles, p, q) @ k.T
-    factors = recursive_bdi(u, n, validate=True)
-    reconstructed = np.eye(n)
-    for block, start, end, kind in factors:
-        embedded = np.eye(n)
-        width = end - start
-        embedded[start:end, start:end] = (
-            _cartan(block, width // 2, width - width // 2)
-            if kind.startswith("a") else block
-        )
-        reconstructed = reconstructed @ embedded
-    np.testing.assert_allclose(reconstructed, u, atol=2e-10)
+    u = _horizontal_element(p, q, np.resize([np.pi, 0.4, np.pi / 2], p), 23)
+    result = recursive_bdi(u, n, validate=True, **kwargs)
+    if kwargs.get("return_all"):
+        assert min(result) == -1
+        levels = [factors for level, factors in sorted(result.items()) if level >= 0]
+        if "num_iter" in kwargs:
+            assert len(levels) == kwargs["num_iter"] + 1
+    else:
+        levels = [result]
+    for factors in levels:
+        np.testing.assert_allclose(_reconstruct(factors, n), u, atol=2e-10)
+    if "num_iter" not in kwargs:
+        # The recursion depth grows with n, so only check that it ran to the end.
+        assert max(end - start for _, start, end, kind in levels[-1] if kind.startswith("k")) <= 2
