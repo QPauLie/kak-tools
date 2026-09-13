@@ -1,4 +1,5 @@
 # Reproduce the supported CPU test environment without notebook/developer tools.
 # Run from the repository root in a virtual environment (Python >= 3.12).
+# Add the `jax` extra (-e .[test,jax]) to run the compiled circuits in JAX.
 -c constraints-test.txt
 -e .[test]

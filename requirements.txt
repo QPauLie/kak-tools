@@ -1,6 +1,5 @@
 # Full development/notebook environment. The test environment can also be
 # installed on its own with: python -m pip install -r requirements-test.txt
--r requirements-test.txt
-tqdm
-jupyter
+-c constraints-test.txt
+-e .[test,jax,notebooks]
 black

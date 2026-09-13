@@ -22,9 +22,32 @@ python3 -m venv .venv
 .venv/bin/python -m pytest -q
 ```
 
-`constraints-test.txt` records tested versions, including PennyLane 0.45.1 and
-JAX/JAXLIB 0.7.1. `requirements.txt` also includes notebook/development tools.
+`constraints-test.txt` records tested versions, including PennyLane 0.45.1.
+The optional extras are `test` (pytest), `jax` (the JAX/JAXLIB 0.7.1 pair
+PennyLane 0.45.1 documents, for running compiled circuits in JAX) and
+`notebooks` (matplotlib, tqdm, jupyter); `requirements.txt` installs all of them.
 Tests cover representative partitions and concrete numerical regressions.
+
+### Working against a PauLie checkout
+
+An editable PauLie install records its version at install time. If the checkout
+has since bumped its version, `pip install -e .` resolves `paulie>=0.2.2` from
+PyPI and replaces the editable checkout with the wheel. Either re-install the
+checkout first, so its metadata satisfies the pin locally,
+
+```sh
+pip install -e /path/to/PauLie
+pip install -e .
+```
+
+or skip dependency resolution for this package altogether:
+
+```sh
+pip install -e . --no-deps
+pip install -c constraints-test.txt pytest
+```
+
+Repeat the PauLie re-install after every PauLie version bump.
 
 ## Native PauLie classification and KAK compilation
 

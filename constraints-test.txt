@@ -1,6 +1,9 @@
 # Validated CPU test environment: Python 3.13, macOS arm64, 2026-09-11.
 # Constraints pin the resolved runtime/test dependency set, not local package paths.
-# PennyLane 0.45.1's versioned configuration pins JAX/JAXLIB 0.7.1:
+# Install through requirements-test.txt (or requirements.txt) so these pins apply;
+# an environment assembled by hand can drift from them.
+# JAX/JAXLIB are only installed with the `jax` extra. PennyLane 0.45.1's versioned
+# configuration pins the 0.7.1 pair (newer JAX removes APIs PennyLane calls):
 # https://github.com/PennyLaneAI/pennylane/blob/v0.45.1/pyproject.toml
 # Regenerate deliberately after testing a dependency update; run pip check as well.
 appdirs==1.4.4

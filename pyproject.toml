@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kak_tools"
+version = "0.1"
+description = "KAK decomposition tools"
+readme = "README.md"
+# PauLie requires Python >= 3.12.
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=2.0",
+    "scipy>=1.12",
+    "networkx>=3.2",
+    "pennylane>=0.45.1",
+    "paulie>=0.2.2",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8.4,<10"]
+# Only needed to run the compiled circuits through PennyLane's JAX interface.
+# PennyLane 0.45.1 documents this JAX pair; newer JAX releases remove APIs
+# PennyLane still calls (jax.core.is_concrete is gone in JAX 0.11), which pip
+# does not see as a version conflict. Move the pin together with PennyLane.
+# https://docs.pennylane.ai/en/stable/introduction/interfaces/jax.html
+jax = ["jax==0.7.1", "jaxlib==0.7.1"]
+notebooks = ["matplotlib>=3.8", "tqdm", "jupyter"]
+
+[tool.setuptools]
+packages = ["kak_tools"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Test modules import shared helpers from sibling modules in tests/, which
+# only works in pytest's default import mode unless tests/ is on sys.path.
+pythonpath = ["tests"]
+
+[tool.ruff]
+# Standalone exploratory scripts inherited from upstream; not part of the API.
+exclude = ["kak_tools/ai.py", "kak_tools/aii.py", "kak_tools/maja.py", "notebooks"]
+
+[tool.ruff.lint]
+select = ["F", "E9", "B", "C4", "RET"]
